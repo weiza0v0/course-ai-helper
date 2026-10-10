@@ -50,7 +50,7 @@ MOOC / 超星的题目**越来越多是图片**（公式、矩阵、几何图）
 ## 快速开始
 
 ```bash
-git clone https://github.com/<you>/course-ai-helper
+git clone https://github.com/weiza0v0/course-ai-helper
 cd course-ai-helper/platforms/mooc
 cp config.example.toml config.toml      # 填上你的 api_key
 node server.mjs                          # 打开 http://127.0.0.1:8787/
