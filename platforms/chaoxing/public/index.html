@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>超星学习通 AI 答题助手</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">AI</span>
+    <div>
+      <div class="t1">超星学习通 AI 答题助手</div>
+      <div class="t2">控制台粘一次脚本 → 自动上传 → 大模型解题（calc / matrix / calculus / stats / web_search / web_fetch）→ 答案自动回填</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span id="modelPill" class="pill">…</span>
+    <span id="health" class="pill">检测中…</span>
+  </div>
+</header>
+
+<main>
+  <!-- ============ 配置（只读，来自 config.toml） ============ -->
+  <section class="card">
+    <h2><span class="step">⚙</span>配置 <span class="hint" id="cfgFile"></span>
+      <button id="reloadCfg" class="link">重载配置</button>
+      <button id="toggleCfg" class="link">详情</button>
+    </h2>
+    <div id="cfgSummary" class="kv"></div>
+    <div id="cfgBody" class="hidden">
+      <div id="cfgTable" class="kv"></div>
+      <p class="hint">改配置请编辑项目目录下的 <code>config.toml</code>，保存后点「重载配置」即可生效（不用重启）。</p>
+    </div>
+    <div class="row">
+      <button id="testTools">工具自检（6 个）</button>
+    </div>
+    <pre id="toolTestOut" class="out hidden"></pre>
+  </section>
+
+  <!-- ============ 1 一键脚本 ============ -->
+  <section class="card">
+    <h2><span class="step">1</span>在测验页粘一次脚本（就这一处需要手动）</h2>
+    <ol class="steps">
+      <li>超星作业/考试页 — <b>先进入答题界面</b>（能看到题目和选项）。</li>
+      <li><kbd>F12</kbd> 打开控制台；若提示不允许粘贴，先输入 <code>allow pasting</code> 回车。</li>
+      <li>点下面按钮复制脚本 → 粘贴 → 回车。<b>之后不用再管</b>：它会自动上传题目、等答案、自动勾选。</li>
+    </ol>
+    <div class="row">
+      <button id="copyHelper" class="primary">复制一键脚本</button>
+      <a class="btn" id="downloadHelper" href="/console/helper.js?dl=1" download="helper.js">下载 helper.js</a>
+      <a class="btn" id="openHelper" href="/console/helper.js" target="_blank" rel="noreferrer">查看脚本内容</a>
+    </div>
+    <p class="hint">为什么必须手动粘一次？因为这个脚本要在<b>你已登录的页面</b>里跑。粘贴后它一直活着，所以答案能直接推回页面自动勾选，不用再复制粘贴任何东西。</p>
+  </section>
+
+  <!-- ============ 2 状态 + 日志 ============ -->
+  <section class="card">
+    <h2><span class="step">2</span>实时状态</h2>
+    <div class="row">
+      <span id="conn" class="pill">等待页面连接…</span>
+      <span id="prog" class="hint"></span>
+      <button id="resume" class="link" disabled>重新解题</button>
+    </div>
+    <div class="progress"><div id="progressBar"></div></div>
+    <div id="log" class="log"><div class="l q">等待测验页面的控制台脚本上传题目…</div></div>
+  </section>
+
+  <!-- ============ 3 题目与答案 ============ -->
+  <section class="card">
+    <h2><span class="step">3</span>题目与答案</h2>
+    <div id="answerTable" class="answers"><p class="hint">还没有题目。</p></div>
+    <div class="row">
+      <button id="copyFill" disabled>复制填答脚本（用当前表格里的答案）</button>
+      <button id="downloadJson" disabled>导出 answers.json</button>
+    </div>
+    <p class="hint">正常情况下用不到这里——控制台脚本会自动把答案填进页面，且<b>永远不会替你交卷</b>。只有你想手动改答案时，才需要复制上面的填答脚本贴回测验页。</p>
+  </section>
+
+  <!-- ============ 备用：手动粘贴 ============ -->
+  <section class="card">
+    <h2><span class="step">?</span>备用：手动粘贴题目 JSON <button id="toggleManual" class="link">展开</button></h2>
+    <div id="manualBody" class="hidden">
+      <p class="hint">脚本连不上本机助手时（比如 token 失效），它会退回复制题目 JSON 到剪贴板，粘到这里即可。</p>
+      <textarea id="paperInput" rows="5" placeholder='把题目 JSON 粘到这里（{"tid":"...","questions":[...]}）'></textarea>
+      <div class="row">
+        <button id="parseBtn" class="primary">解析题目</button>
+        <button id="solveBtn" disabled>开始解题</button>
+        <button id="loadExample">载入示例题目</button>
+        <span id="parseInfo" class="hint"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>本地运行 · 无第三方依赖 · API Key 只在 config.toml（不会发给浏览器）</span>
+  <span id="ver"></span>
+</footer>
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>fill.js 仿真测试页（复刻 MOOC 测验 DOM 结构）</title>
+<style>
+  body { font: 14px sans-serif; margin: 20px; }
+  .m-choiceQuestion { border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+  .j-choicebox ul { list-style: none; padding-left: 6px; }
+  .j-choicebox li { margin: 4px 0; }
+  .optionPos { display: inline-block; width: 26px; }
+  .optionCnt { display: inline-block; }
+  .u-icon-correct::before { content: "✔"; color: green; }
+  .u-icon-wrong::before { content: "✘"; color: red; }
+  .qaCate { color: #888; font-size: 12px; }
+  #out { margin-top: 16px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h3>仿真测验页（3 题：单选 / 单选 / 判断，判断题的 A 是「错误」用来测映射）</h3>
+<div class="m-data-lists" id="list"></div>
+<div id="out">尚未填答</div>
+<script>
+// 复刻真实页面的结构： input id = op_<qid>_<oid><13位时间戳>
+const DATA = [
+  {qid: 100001, type: '单选', stem: '设 D = |1 0 a 1| ，则 D = （ ）',
+   opts: [{oid: 9001, text: 'a+b-d'}, {oid: 9002, text: 'a+b+c'}, {oid: 9003, text: 'a+b-c'}, {oid: 9004, text: 'a+b+d'}]},
+  {qid: 100002, type: '单选', stem: '下列哪个是范德蒙德行列式的值？',
+   opts: [{oid: 9101, text: '-10368'}, {oid: 9102, text: '10368'}, {oid: 9103, text: '-10386'}, {oid: 9104, text: '10386'}]},
+  // 注意：判断题 A 是「错误」、B 是「正确」，和真实测验一致
+  {qid: 100003, type: '判断', stem: '若 n 阶行列式 D=0，则 D 有两行元素相同。',
+   opts: [{oid: 9201, text: '错误', icon: 'wrong'}, {oid: 9202, text: '正确', icon: 'correct'}]},
+];
+const list = document.getElementById('list');
+for (const q of DATA) {
+  const div = document.createElement('div');
+  div.className = 'm-choiceQuestion u-questionItem examMode';
+  const ts = Date.now() + '' + Math.floor(Math.random() * 1000);
+  div.innerHTML = `
+    <div class="j-title title">
+      <div class="qaDescription">
+        <div class="qaCate j-qacate"><span>${q.type}</span></div>
+        <div class="f-richEditorText j-richTxt">${q.stem}</div>
+      </div>
+    </div>
+    <div class="j-choicebox"><ul class="choices">
+      ${q.opts.map((o, k) => `
+        <li class="f-cb">
+          <input class="u-tbi" id="op_${q.qid}_${o.oid}${ts}" type="radio" name="op_${q.qid}">
+          <label class="u-tbl" for="op_${q.qid}_${o.oid}${ts}">
+            <div class="optionPos">${String.fromCharCode(65 + k)}.</div>
+            <div class="optionCnt f-richEditorText">${o.icon ? `<span class="u-icon-${o.icon}"></span>` : o.text}</div>
+          </label>
+        </li>`).join('')}
+    </ul></div>`;
+  list.appendChild(div);
+}
+document.getElementById('out').textContent = '题目已渲染 ' + DATA.length + ' 题';
+</script>
+</body>
+</html>

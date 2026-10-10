@@ -1,0 +1,45 @@
+# ============================================================
+#  MOOC 测验 AI 答题助手 —— 配置文件
+#  改完保存，在网页上点「重载配置」即可生效（不用重启）
+#  ⚠ 分发/分享这个文件夹之前，先把下面的 api_key 清空
+# ============================================================
+
+[server]
+# 本地服务端口（网页地址就是 http://127.0.0.1:<port>/）
+port = 8787
+# 启动时自动打开浏览器
+open_browser = true
+
+[model]
+# 任何 OpenAI 兼容接口都可以
+base_url = "https://api.deepseek.com/v1"
+# 必填：你的 API Key
+api_key = ""
+# 必须是支持图片输入的多模态模型
+model = "deepseek-flash"
+# 思考强度：off（关闭）/ low / high / max —— 数学题建议 max，不然容易算错
+reasoning_effort = "max"
+temperature = 0
+# 同时解几道题
+concurrency = 3
+# 每题最多让模型调用几轮工具（calc / web_search / web_fetch）
+max_tool_rounds = 4
+# 关掉就退化成纯推理，模型不能调工具验证
+use_tools = true
+# 单次模型请求超时（秒）
+timeout_seconds = 300
+# 撞到限流(429)/服务端错误时的重试次数（指数退避）
+max_retries = 3
+
+[app]
+# 控制台脚本一上传题目，后端就自动开始解题
+auto_solve = true
+# 出答案后自动把答案推回页面并勾选（只在控制台脚本还活着时有效）
+auto_fill = true
+# 控制台脚本查答案的轮询间隔（秒）
+poll_seconds = 2
+# ★ 两次勾选之间的间隔（毫秒）。MOOC 页面每勾一个选项就发一次 saveDraftAnswers 草稿写请求，
+#   一秒内连点会被平台判为"并发限制，请稍后再试"—— 这个间隔就是用来错开这些请求的。
+fill_interval_ms = 400
+# 撞到平台"并发限制"弹窗后等多久再继续（毫秒）
+limit_backoff_ms = 3000
