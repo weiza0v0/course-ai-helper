@@ -120,11 +120,27 @@ async function browserRunning() {
  *     Chrome 会带着用户已登录的会话打开页面。所以 Chrome 127+ 的 App-Bound Encryption
  *     对本工具毫无影响（那玩意只挡"从外部解密 cookie"的做法）。
  */
-function profileCandidates() {
+export function profileCandidates(exePath) {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   const L = process.env.LOCALAPPDATA || '';       // Windows：当前用户
   const A = process.env.APPDATA || '';
-  if (process.platform === 'win32') return [
+  const exe = String(exePath || '');
+  // 从可执行文件名推断"家族" —— 填了便携版 Chrome，就别再去看 Edge 的目录
+  const family = /msedge/i.test(exe) ? 'edge'
+    : /360/i.test(exe) ? '360'
+    : /qqbrowser/i.test(exe) ? 'qq'
+    : /sogou/i.test(exe) ? 'sogou'
+    : /chrome|chromium/i.test(exe) ? 'chrome'
+    : 'any';
+  const keep = name => family === 'any'
+    || (family === 'edge' && /^Edge/.test(name))
+    || (family === 'chrome' && /^Chrom/.test(name))
+    || (family === '360' && /360/.test(name))
+    || (family === 'qq' && /QQ/.test(name))
+    || (family === 'sogou' && /搜狗/.test(name));
+
+  let list;
+  if (process.platform === 'win32') list = [
     ['Chrome', path.join(L, 'Google/Chrome/User Data')],
     ['Chrome Beta', path.join(L, 'Google/Chrome Beta/User Data')],
     ['Chrome Dev', path.join(L, 'Google/Chrome Dev/User Data')],
@@ -135,19 +151,34 @@ function profileCandidates() {
     ['QQ 浏览器', path.join(L, 'Tencent/QQBrowser/User Data')],
     ['搜狗浏览器', path.join(A, 'SogouExplorer/User Data')],
   ];
-  if (process.platform === 'darwin') return [
+  else if (process.platform === 'darwin') list = [
     ['Chrome', path.join(home, 'Library/Application Support/Google/Chrome')],
     ['Chrome Beta', path.join(home, 'Library/Application Support/Google/Chrome Beta')],
     ['Chrome Canary', path.join(home, 'Library/Application Support/Google/Chrome Canary')],
     ['Edge', path.join(home, 'Library/Application Support/Microsoft Edge')],
     ['Chromium', path.join(home, 'Library/Application Support/Chromium')],
   ];
-  return [
+  else list = [
     ['Chrome', path.join(home, '.config/google-chrome')],
     ['Chrome Beta', path.join(home, '.config/google-chrome-beta')],
     ['Chromium', path.join(home, '.config/chromium')],
     ['Edge', path.join(home, '.config/microsoft-edge')],
   ];
+  list = list.filter(([n]) => keep(n));
+
+  // ★ 便携版/绿色版：登录态通常在 exe 旁边，而不是系统标准目录
+  if (exe) {
+    const dir = path.dirname(exe);
+    const parent = path.dirname(dir);
+    list = [
+      [`exe 同级 User Data`, path.join(dir, 'User Data')],
+      [`exe 同级 u-data`, path.join(dir, 'u-data')],
+      [`exe 同级 profile`, path.join(dir, 'profile')],
+      [`exe 上级 User Data`, path.join(parent, 'User Data')],
+      ...list,
+    ];
+  }
+  return list;
 }
 
 /** 看起来像个真 profile 吗（有 Default/ 或 Local State）—— 免得选到空壳目录 */
@@ -158,8 +189,8 @@ function looksLikeProfile(dir) {
 }
 
 /** 返回 {dir, name, checked:[{name,dir,exists}]}；找不到就 dir=null（调用方会退回助手 profile） */
-function findDefaultProfile() {
-  const cands = profileCandidates().filter(([, d]) => d);
+function findDefaultProfile(exePath) {
+  const cands = profileCandidates(exePath).filter(([, d]) => d);
   const checked = cands.map(([name, dir]) => ({name, dir, exists: fs.existsSync(dir) && looksLikeProfile(dir)}));
   const hit = checked.find(c => c.exists);
   return {dir: hit ? hit.dir : null, name: hit ? hit.name : null, checked};
@@ -176,15 +207,30 @@ function helperProfileDir() {
  *   2) 日常浏览器**没在跑** → 直接用它的 profile（已登录，零登录）
  *   3) 否则用助手专用 profile（登录一次，之后一直记得）
  */
-async function pickProfile(explicit) {
-  if (explicit) return {dir: explicit, why: '指定的 profile（--profile）', real: false};
+async function pickProfile(explicit, exePath, {interactive = true} = {}) {
+  if (explicit) return {dir: explicit, why: '指定的 profile（--profile / [cdp] profile）', real: false};
   const running = await browserRunning();
-  const {dir: def, name: defName, checked} = findDefaultProfile();
+  const {dir: def, name: defName, checked} = findDefaultProfile(exePath);
   if (def && !running) {
     return {dir: def, why: `你日常的 ${defName} 登录态 —— 通常不用再登录`, real: true};
   }
   if (!def) {
-    return {dir: helperProfileDir(), why: '没在你机器上找到常见的浏览器 profile（下面列了查过的位置），用助手专用 profile（登录一次会记住）', real: false, checked};
+    // 填了浏览器路径也确定不了 profile（那是两回事）—— 直接问一次，问到了就记住
+    if (interactive && process.stdin.isTTY) {
+      info('');
+      warn('找到了浏览器，但没找到它的 profile（登录态）目录');
+      info(c('    填 browser 只是告诉用哪个程序；用哪套登录态是另一件事（--user-data-dir）', 'dim'));
+      info(c('    便携版/绿色版一般在 exe 同级或上级的 User Data；不确定就回车用助手 profile（登录一次）', 'dim'));
+      const p = await ask('  浏览器 User Data 目录（直接回车=用助手专用 profile）: ');
+      if (p) {
+        if (fs.existsSync(p)) {
+          try { saveCdpSetting(__dirname, process.env.CONFIG_FILE || '', 'profile', p); ok('已记住：[cdp] profile'); } catch {}
+          return {dir: p, why: '你填的 profile（[cdp] profile）', real: false};
+        }
+        warn('这个目录不存在，改用助手专用 profile');
+      }
+    }
+    return {dir: helperProfileDir(), why: '没找到日常浏览器的 profile（下面列了查过的位置），用助手专用 profile（登录一次会记住）', real: false, checked};
   }
   if (running) {
     return {dir: helperProfileDir(), why: `你的 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行（它锁着 profile，也连不上调试端口）。改用助手专用 profile：**登录一次就会记住**，以后不再问`, real: false};
@@ -359,6 +405,15 @@ async function selftest() {
     }
   }
 
+  // 2b. 浏览器/profile 定位
+  const portable = path.join(path.sep + 'tmp', 'ChromePortable', 'chrome.exe');
+  const pc = profileCandidates(portable).map(([, d]) => d);
+  t('profile 探测：便携版会看 exe 同级的 User Data', pc.includes(path.join(path.dirname(portable), 'User Data')));
+  const edgeCands = profileCandidates(path.join('C:', 'Edge', 'msedge.exe')).map(([n]) => n).join(',');
+  t('profile 探测：按浏览器家族过滤（填了 Edge 就不去找 Chrome）',
+    !/Chrome/.test(edgeCands) && /Edge/.test(edgeCands), edgeCands);
+  t('profile 探测：没给 exe 时也给标准位置', profileCandidates('').length > 0);
+
   // 2. 桥接层
   const {BRIDGE_SOURCE: BS} = await import('./lib/bridge.mjs');
   t('桥接层：拦截 /api/collect 与 /api/answers', /api\/collect/.test(BS) && /api\/answers/.test(BS));
@@ -507,8 +562,8 @@ async function main() {
 
   // ---- 只打开登录窗口（不需要平台）
   if (flags.has('login')) {
-    const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '');
     const exe = await resolveBrowserExe(CFG, opts);
+    const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '', exe);
     const b = await ensureBrowser(port, opts.url, prof.dir, exe);
     ok(`浏览器已就绪（端口 ${port}）`);
     info(c(`    profile：${b.profile || prof.dir}`, 'dim'));
@@ -538,8 +593,8 @@ async function main() {
   }
 
   // ---- 浏览器：没开就拉起来（尽量借用你日常的登录态）
-  const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '');
   const exe = await resolveBrowserExe(CFG, opts);
+  const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '', exe);
   const br = await ensureBrowser(port, url, prof.dir, exe);
   ok(`浏览器就绪（端口 ${port}${br.launched ? '，刚启动' : '，已连接'}）`);
   info(c(`    profile：${br.profile || prof.dir}`, 'dim'));

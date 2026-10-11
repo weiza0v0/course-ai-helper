@@ -114,7 +114,29 @@ $ node cli.mjs chaoxing "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?...
 工具也从不读取 profile 里的任何文件。
 
 找不到时（浏览器装在非常规位置、便携版、小众浏览器）会**问你一次**，并把答案写进
-`config.toml` 的 `[cdp] browser`，以后不再问；也可以直接 `--browser "<路径>"` 或 `[cdp] profile` 指定。
+`config.toml` 的 `[cdp] browser`，以后不再问；也可以直接 `--browser "<路径>"`。
+
+### ⚠ `browser` 和 `profile` 是两件事
+
+| 配置 | 管什么 |
+| --- | --- |
+| `[cdp] browser` | **用哪个程序**打开（可执行文件路径）|
+| `[cdp] profile` | **用哪套登录态**（传给 Chrome 的 `--user-data-dir`）|
+
+**填了 browser 并不等于确定了 profile** —— 比如便携版 Chrome 放在 `D:\Chrome\chrome.exe`，
+它的登录态一般在 **exe 同级或上级的 `User Data`**，不在系统标准目录里。
+
+所以 profile 探测是**跟着你填的 exe 走**的：
+
+1. 从 exe 文件名判断"家族"（`chrome.exe` / `msedge.exe` / `360…` / `QQBrowser…`），
+   只去该家族对应的目录找；
+2. 优先看 **exe 同级 / 上级的 `User Data`、`u-data`、`profile`**（便携版、绿色版常见布局）；
+3. 再看该家族的系统标准目录；
+4. 都找不到 → **问你一次** User Data 目录，答案记进 `[cdp] profile`；
+   直接回车则用助手专用 profile（登录一次会记住）。
+
+> Chrome 传给 `--user-data-dir=<User Data>` 之后会自己打开**上次用的那个 profile**，
+> 所以不用我们区分 `Default` / `Profile 1`。
 
 Windows 免安装：先 `node scripts/fetch-node.mjs` 拉一个便携 node，之后双击 `启动.bat`
 （会问你平台和链接）。
