@@ -583,6 +583,20 @@ async function selftest() {
     needsBrowser(200, '文心雕龙 - 维基百科', '《文心雕龙》共十卷五十篇。'.repeat(20), 'https://zh.wikipedia.org/wiki/x') === false);
   t('抓取判定：空壳页（无标题+极短正文）走浏览器',
     needsBrowser(200, '', 'Loading...', 'https://example.com/x') === true);
+  // ★★ 安全回归防护（这条是整件事的红线）：
+  //    实测把标签当"答题页"并保持可见后 —— background:true 的临时标签完全不影响它
+  //    （visibilityState 仍为 visible、hasFocus() 仍为 true），而**前台**标签会立刻把它
+  //    变成 hidden + 失去焦点，正是超星/智慧树那类防作弊系统判定"切屏"的信号。
+  //    所以 browserFetch 里绝不允许存在"background 失败就退回前台标签"的兜底。
+  {
+    const cdpSrc = fs.readFileSync(path.join(__dirname, 'lib', 'cdp.mjs'), 'utf8');
+    t('安全红线：browserFetch 只用后台标签，绝不退回前台（否则会切走答题页）',
+      /background:\s*true/.test(cdpSrc)
+      && !/catch\s*\{[^}]*Target\.createTarget[^}]*\{url:\s*'about:blank'\}\s*\)/.test(cdpSrc)
+      && !/created\s*=\s*await bsend\('Target\.createTarget',\s*\{\s*url:\s*'about:blank'\s*\}\)/.test(cdpSrc));
+    t('安全红线：抓取后自检"后台标签居然可见"→ 立即放弃',
+      cdpSrc.includes('后台标签没能保持后台'));
+  }
 
   t('工具裁剪：文史题只发 calc+联网，数学题发全部',
     (() => {
@@ -632,6 +646,16 @@ async function selftest() {
   t('配置：config.toml 可读', !!config && !!config.model);
   t('配置：模型与 key 已设置', !!config.model.model, `model=${config.model.model} key=${config.model.api_key ? '已配置' : '未配置'}`);
   t('配置：没有 auto_submit（永不交卷）', !JSON.stringify(config).includes('auto_submit'));
+  // ★ 浏览器兜底的"关机键"：默认开，但必须能一键关掉
+  {
+    const os = await import('node:os');
+    const tmpCfg = path.join(os.tmpdir(), 'cah-selftest-off.toml');
+    fs.writeFileSync(tmpCfg, '[app]\nweb_browser_fallback = false\n', 'utf8');
+    const {config: cfgOff} = loadConfig(__dirname, tmpCfg);
+    fs.unlinkSync(tmpCfg);
+    t('配置：web_browser_fallback 默认开、可一键关',
+      config.app.web_browser_fallback === true && cfgOff.app.web_browser_fallback === false);
+  }
 
   // 5. 工具与数学
   t(`工具：${toolSpecs.map(x => x.function.name).join(' / ')}`, toolSpecs.length === 6);
@@ -979,7 +1003,33 @@ async function main() {
   //   用同一个浏览器开一个**后台标签**抓正文，读完就关 ——
   //   全程只新建/关闭临时标签，绝不导航或改动用户正在做题的那个页面。
   //   （放在这里而不是更早：--list/--selftest/--doctor 必须完全不碰浏览器。）
-  setBrowserFetcher(url => browserFetch(url, {port}));
+  //
+  //   三道保险，任何一道不满足就完全不用这条路：
+  //     1) config 的 web_browser_fallback 可以一键关掉；
+  //     2) 绝不用浏览器打开"答题页自身"（多开考试标签可能触发平台并发检测）；
+  //     3) 只要 browserFetch 报"不支持后台开标签/抢了激活"，本次运行立刻永久关掉兜底，
+  //        不会每一次抓取都再去开一次标签。
+  if (CFG.app?.web_browser_fallback === false) {
+    info(c('    浏览器兜底抓取：已按配置关闭（web_browser_fallback = false）', 'dim'));
+  } else {
+    const fbPlatform = matchPlatform(platforms, opts.platform);
+    let fallbackOff = '';
+    setBrowserFetcher(async url => {
+      if (fallbackOff) throw new Error(fallbackOff);
+      if (fbPlatform?.matchUrl && fbPlatform.matchUrl.test(url)) {
+        throw new Error('拒绝用浏览器打开答题页自身（避免多开考试标签）');
+      }
+      try {
+        return await browserFetch(url, {port});
+      } catch (e) {
+        if (/后台开标签|没能保持后台|抢了激活/.test(String(e.message))) {
+          fallbackOff = String(e.message);
+          warn('已永久关闭浏览器兜底（本次运行）：' + e.message);
+        }
+        throw e;
+      }
+    });
+  }
 
   if (!settings.apiKey) { bad('config.toml 里没填 api_key'); process.exit(2); }
 
