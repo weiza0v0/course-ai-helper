@@ -18,6 +18,7 @@
  *   --sheet        只出答案单，不碰页面（智慧树这类平台默认如此）
  *   --no-fill      解题但不动页面
  *   --list         只列出浏览器里的标签
+ *   --doctor       诊断：浏览器在不在跑、会用哪个 exe/profile、登录态从哪来（不启动任何东西）
  *   --login        只打开登录窗口（借用你日常浏览器登录态；登录完再跑上面那条命令）
  *   --profile <dir> 指定浏览器 profile 目录（默认自动：优先借你日常浏览器的登录态）
  *   --browser <exe> 指定浏览器可执行文件（默认自动找；找不到会问你一次并记进 config.toml）
@@ -267,7 +268,26 @@ async function pickProfile(explicit, exePath, {interactive = true} = {}) {
     return {dir: helperProfileDir(), why: '没找到日常浏览器的 profile（下面列了查过的位置），用助手专用 profile（登录一次会记住）', real: false, checked};
   }
   if (running) {
-    return {dir: helperProfileDir(), why: `你的 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行（它锁着 profile，也连不上调试端口）。改用助手专用 profile：**登录一次就会记住**，以后不再问`, real: false};
+    const name = running === 'edge' ? 'Edge' : 'Chrome';
+    // ★ 不再"悄悄换掉" —— 那正是"为什么依旧没登录"的根源。明确问一次。
+    if (def && interactive && process.stdin.isTTY) {
+      warn(`检测到你的 ${name} 正在运行 —— 它锁着自己的 profile，现在**借不到你的登录态**`);
+      info(c('    1) 完全退出 ' + name + '（任务栏关闭，确认没有残留进程），然后按回车 → 用你日常的登录态，零登录', 'dim'));
+      info(c('    2) 输入 h 再回车 → 用助手专用 profile（现在就能用，登录一次会一直记住）', 'dim'));
+      const ans = await ask('  选择 [回车 = 等我去关浏览器 / h = 用助手 profile]: ');
+      if (String(ans).trim().toLowerCase() !== 'h') {
+        info(c('    等 ' + name + ' 退出…', 'dim'));
+        for (let i = 0; i < 90; i++) {
+          await sleep(1000);
+          if (!(await browserRunning())) { ok(`${name} 已退出，改用你日常的登录态（零登录）`); return {dir: def, why: `${name} 的登录态`, real: true}; }
+        }
+        warn('等了 90 秒还没退出，这次先用助手专用 profile');
+      }
+      return {dir: helperProfileDir(), why: '你选的助手专用 profile（登录一次会记住）', real: false, checked};
+    }
+    warn(`检测到你的 ${name} 正在运行 —— 借不到它的登录态，改用助手专用 profile`)
+    info(c('    想要零登录：先把 ' + name + ' 完全退出再跑一次', 'dim'));
+    return {dir: helperProfileDir(), why: `助手专用 profile（你的 ${name} 正在运行，没法借用它的登录态；登录一次会记住）`, real: false};
   }
   return {dir: helperProfileDir(), why: '助手专用 profile（登录一次就会记住）', real: false};
 }
@@ -276,7 +296,7 @@ async function pickProfile(explicit, exePath, {interactive = true} = {}) {
 function explainProfileSearch(prof) {
   if (!prof.checked) return;
   info(c('    查过这些位置（都要求目录里有 Default/ 或 Local State）：', 'dim'));
-  for (const c of prof.checked) info(c(`      ${c.exists ? '✓' : '·'} ${c.name.padEnd(14)} ${c.dir}`, 'dim'));
+  for (const chk of prof.checked) info(c(`      ${chk.exists ? '✓' : '·'} ${String(chk.name).padEnd(14)} ${chk.dir}`, 'dim'));
   info(c('    你的浏览器装在别处？用 --profile "<User Data 目录>" 指定，或在 config.toml 里写 [cdp] profile', 'dim'));
 }
 
@@ -572,6 +592,78 @@ async function waitUntilReady(session, platform, url) {
   return false;
 }
 
+// ------------------------------------------------------------------ 诊断（不启动任何东西）
+async function doctor(platforms, CFG, opts) {
+  const port = Number(opts.port || CFG.cdp?.port || 9222);
+  console.log();
+  info(c('浏览器 / 登录态诊断（--doctor，不会启动或修改任何东西）', 'bold'));
+  line();
+
+  // 1) 浏览器进程
+  const running = await browserRunning();
+  running ? warn(`检测到 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行`)
+          : ok('没有检测到运行中的 Chrome/Edge');
+  if (running) info(c('    ↑ 运行中的浏览器锁着自己的 profile，也连不上调试端口', 'dim'));
+
+  // 2) 调试端口
+  try {
+    const tabs = await listTabs(port);
+    ok(`调试端口 ${port} 可用，已打开 ${tabs.length} 个标签`);
+    for (const t of tabs.slice(0, 8)) {
+      const hit = platforms.find(p => p.matchUrl && p.matchUrl.test(t.url));
+      info(c(`      ${hit ? '●' : '○'} ${(t.title || '').slice(0, 22).padEnd(22)} ${t.url.slice(0, 66)}${hit ? '  ← ' + hit.name : ''}`, 'dim'));
+    }
+    info(c('    （已经有一个带调试端口的浏览器在跑，工具会直接用这个，不会另开）', 'dim'));
+  } catch (e) {
+    info(c(`调试端口 ${port}：没有浏览器在监听`, 'dim'));
+  }
+
+  // 3) 浏览器可执行文件
+  console.log();
+  const exeCfg = opts.browser || CFG.cdp?.browser || '';
+  info('浏览器可执行文件：');
+  info(`    [cdp] browser = ${exeCfg ? `'${exeCfg}'` : '(空 → 自动找)'}`);
+  const exe = exeCfg && fs.existsSync(exeCfg) ? exeCfg : detectBrowserExe();
+  exe ? ok(`    将使用：${exe}`) : bad('    没找到（启动时会问你一次，并记进 config.toml）');
+  if (!exeCfg) {
+    const auto = process.platform === 'win32' ? [
+      path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google/Chrome/Application/chrome.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'),
+      path.join(process.env['ProgramFiles'] || '', 'Microsoft/Edge/Application/msedge.exe'),
+    ] : [];
+    for (const c of auto) if (c) info(c(`      ${fs.existsSync(c) ? '✓' : '·'} ${c}`, 'dim'));
+  }
+
+  // 4) profile
+  console.log();
+  const profCfg = opts.profile || CFG.cdp?.profile || '';
+  info('登录态（profile）：');
+  info(`    [cdp] profile = ${profCfg ? `'${profCfg}'` : '(空 → 自动找)'}`);
+  if (profCfg) {
+    const {dir, adjusted} = normalizeProfileDir(profCfg);
+    fs.existsSync(dir) ? ok(`    将使用：${dir}${adjusted ? '  （已自动上退一级）' : ''}`)
+                       : bad(`    这个目录不存在：${dir}`);
+  } else {
+    const {dir, name, checked} = findDefaultProfile(exe);
+    for (const chk of checked) info(c(`      ${chk.exists ? '✓' : '·'} ${String(chk.name).padEnd(14)} ${chk.dir}`, 'dim'));
+    if (dir && !running) ok(`    将使用：${name} → ${dir}   （借你日常登录态，零登录）`);
+    else if (dir && running) warn(`    找到了 ${name}（${dir}），但浏览器正在运行 → 现在**借不到**，会退回助手专用 profile`);
+    else warn('    没找到日常浏览器的 profile → 会退回助手专用 profile（或问你要路径）');
+  }
+  console.log();
+  extInfo();
+  console.log();
+}
+
+function extInfo() {
+  const helper = helperProfileDir();
+  info('助手专用 profile：' + helper);
+  info(c(`    ${fs.existsSync(helper) ? '存在（里面登录过的话会保留）' : '还不存在（第一次用会新建）'}`, 'dim'));
+  info(c('    ⚠ 它和你日常 Chrome 是两套登录态：如果你希望"用日常登录态"，', 'dim'));
+  info(c('      需要先把 Chrome 完全退出，再跑一次（工具会自动改用日常 profile）', 'dim'));
+}
+
 // ------------------------------------------------------------------ 主流程
 async function main() {
   const {flags, opts} = parseArgs(process.argv.slice(2));
@@ -600,6 +692,7 @@ async function main() {
     return;
   }
   if (flags.has('selftest')) return selftest();
+  if (flags.has('doctor')) return doctor(platforms, CFG, opts);
 
   if (!settings.apiKey) { bad('config.toml 里没填 api_key'); process.exit(2); }
 
