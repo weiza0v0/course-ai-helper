@@ -47,6 +47,7 @@ async function loadConfig() {
   state.cfg = j.config;
   state.token = j.token;
   $('#cfgFile').textContent = j.configFile + (j.created ? '（已自动生成）' : '');
+  if (j.site) { document.title = j.site.name; const sn = $('#siteName'); if (sn) sn.textContent = j.site.name; }
   const m = j.config.model;
   $('#modelPill').textContent = `${m.model} · 思考 ${m.reasoning_effort}`;
   $('#modelPill').className = 'pill ' + (m.api_key_set ? 'ok' : 'bad');
@@ -67,8 +68,107 @@ async function loadConfig() {
     <div class="kv-k">Key</div><div class="kv-v">${m.api_key_set ? '已配置' : '未配置'}</div>
     <div class="kv-k">自动</div><div class="kv-v">解题 ${j.config.app.auto_solve ? '开' : '关'} / 填答 ${j.config.app.auto_fill ? '开' : '关'} / 交卷 永不</div>`;
   if (j.parseError) toast('config.toml 解析出错：' + j.parseError, 6000);
+  renderPlatformBar(j);
+  applyMode(j);
   return j;
 }
+
+/** 渲染平台选择器 */
+function renderPlatformBar(j) {
+  const bar = $('#platformBar');
+  if (!bar || !j.platforms) return;
+  bar.innerHTML = j.platforms.map(p => {
+    const on = j.site && p.id === j.site.id;
+    return `<button class="btn plat ${on ? 'primary' : ''}" data-id="${esc(p.id)}" title="${esc(p.mode === 'cdp' ? '只读出答案单' : '控制台脚本填答')}">${esc(p.name)}${p.mode === 'cdp' ? ' ·只读' : ''}</button>`;
+  }).join(' ');
+  for (const b of bar.querySelectorAll('button.plat')) {
+    b.onclick = async () => {
+      if (b.classList.contains('primary')) return;
+      b.disabled = true;
+      const r = await (await fetch('/api/platform', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: b.dataset.id})})).json();
+      if (!r.ok) { toast('切换失败：' + (r.error || ''), 4000); b.disabled = false; return; }
+      state.paper = null; state.serverAnswers = {}; state.lastStatus = null; state.sessionId = -1;
+      $('#log').innerHTML = '';
+      $('#answerTable').innerHTML = '<p class="hint">还没有题目。按上面第 1 步操作。</p>';
+      await loadConfig();
+      toast('已切到：' + r.site.name);
+    };
+  }
+  const cur = j.platforms.find(p => j.site && p.id === j.site.id);
+  if (cur) $('#platformHint').textContent = (cur.platformHint || '') + (cur.mode === 'cdp' ? '（本模式只读：答案写成答案单，由你手工填）' : '');
+}
+
+/** 按平台能力切界面：CDP 只读模式（智慧树这类）/ 控制台脚本模式 */
+function applyMode(j) {
+  const cdp = !!(j.site && j.site.cdp);
+  state.cdp = cdp;
+  $('#cardScript').classList.toggle('hidden', cdp);
+  $('#cardCdp').classList.toggle('hidden', !cdp);
+  if ($('#fillHint')) $('#fillHint').classList.toggle('hidden', cdp);
+  if ($('#copyFill')) $('#copyFill').classList.toggle('hidden', cdp);
+  if (cdp) {
+    const port = (j.config.app && j.config.app.cdp && j.config.app.cdp.port) || 9222;
+    $('#cdpPort').value = port;
+    const t = $('#cfgTable');
+    if (t && !/CDP 只读/.test(t.innerHTML)) {
+      t.insertAdjacentHTML('beforeend', '<div class="kv-k">读取方式</div><div class="kv-v">CDP 只读（不点击 / 不填答 / 不提交）</div>');
+    }
+    $('#cdpInfo').textContent = '还没连。点「检查连接」看看那个带调试端口的浏览器是否就绪。';
+  }
+}
+
+// ---- CDP 只读模式：读卷 → 解题 → 出答案单
+async function cdpStatus() {
+  const port = Number($('#cdpPort').value || 9222);
+  try {
+    const j = await (await fetch(`/api/cdp/status?port=${port}`)).json();
+    if (!j.ok) { $('#cdpInfo').textContent = '❌ ' + (j.error || '连不上'); $('#cdpInfo').style.color = '#c33'; return; }
+    const hit = (j.tabs || []).filter(t => t.matched);
+    $('#cdpInfo').style.color = '';
+    $('#cdpInfo').textContent = hit.length
+      ? `✅ 已连上（端口 ${j.port}），找到答题页：${hit[0].title || hit[0].url.slice(0, 70)}`
+      : `✅ 连上了（端口 ${j.port}），但没找到答题页。请在那个浏览器里打开作业答题界面。当前 ${(j.tabs || []).length} 个标签。`;
+  } catch (e) {
+    $('#cdpInfo').textContent = '❌ ' + e.message;
+  }
+}
+async function cdpCollect() {
+  const port = Number($('#cdpPort').value || 9222);
+  $('#cdpInfo').style.color = '';
+  $('#cdpInfo').textContent = '正在读取卷子…';
+  $('#cdpCollect').disabled = true;
+  try {
+    const j = await (await fetch(`/api/cdp/collect?port=${port}`, {method: 'POST'})).json();
+    if (!j.ok) { $('#cdpInfo').style.color = '#c33'; $('#cdpInfo').textContent = '❌ ' + (j.error || '失败'); return; }
+    $('#cdpInfo').textContent = `✅ 读到 ${j.total} 道题，正在解题…（只读，没有在页面上点任何东西）`;
+    state.sessionId = -1;
+  } catch (e) {
+    $('#cdpInfo').style.color = '#c33';
+    $('#cdpInfo').textContent = '❌ ' + e.message;
+  } finally {
+    $('#cdpCollect').disabled = false;
+  }
+}
+
+function showReport(file) {
+  const a = $('#downloadReport');
+  if (!a) return;
+  a.classList.toggle('hidden', !file);
+  const p = $('#reportPath');
+  if (p) {
+    p.classList.toggle('hidden', !file);
+    p.textContent = file ? `答案单已保存：data/${file} —— 打开它照着填即可（交卷仍由你自己点）` : '';
+  }
+}
+if ($('#cdpStatus')) $('#cdpStatus').onclick = cdpStatus;
+if ($('#cdpCollect')) $('#cdpCollect').onclick = cdpCollect;
+
+if ($('#cdpStatus')) $('#cdpStatus').onclick = cdpStatus;
+if ($('#cdpCollect')) $('#cdpCollect').onclick = cdpCollect;
+
+if ($('#cdpStatus')) $('#cdpStatus').onclick = cdpStatus;
+if ($('#cdpCollect')) $('#cdpCollect').onclick = cdpCollect;
+
 $('#toggleCfg').onclick = () => {
   const b = $('#cfgBody');
   b.classList.toggle('hidden');
@@ -179,8 +279,14 @@ async function poll() {
     if (j.status !== state.lastStatus) {
       state.lastStatus = j.status;
       renderStatus(j);
-      if (j.status === 'done') { renderAnswers(); toast('全部题目已出答案，已自动填进页面（未提交）'); }
+      if (j.status === 'done') {
+        renderAnswers();
+        toast(state.cdp ? '答案已出，已生成答案单（本模式只读，请照着答案单自己填）' : '全部题目已出答案，已自动填进页面（未提交）', 5200);
+      }
     }
+    if (j.reportFile) showReport(j.reportFile);
+    if (j.reportFile) showReport(j.reportFile);
+    if (j.reportFile) showReport(j.reportFile);
     $('#prog').textContent = j.total ? `${j.done}/${j.total}` : '';
     setProgress(j.total ? j.done / j.total * 100 : 0);
     $('#resume').disabled = !state.paper || j.running;
@@ -198,7 +304,9 @@ function renderStatus(j) {
     idle: ['等待测验页面连接…', ''],
     collected: ['已收到题目，准备解题…', ''],
     running: ['正在解题…', 'ok'],
-    done: [`解题完成（${j.done}/${j.total}）· 答案已填入页面，等待你自己提交`, 'ok'],
+    done: [state.cdp
+        ? `解题完成（${j.done}/${j.total}）· 答案单已生成，请照着手工填`
+        : `解题完成（${j.done}/${j.total}）· 答案已填入页面，等待你自己提交`, 'ok'],
     error: ['解题出错：' + (j.error || ''), 'bad'],
   };
   const [text, cls] = map[j.status] || [j.status, ''];

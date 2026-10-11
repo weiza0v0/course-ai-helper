@@ -7,6 +7,8 @@ node.exe
 
 # 运行期数据
 **/data/*.json
+**/data/*.md
+**/data/platform.txt
 !**/data/.gitkeep
 
 # 依赖 / 产物

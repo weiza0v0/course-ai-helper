@@ -11,9 +11,8 @@ import {fileURLToPath} from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const which = args[0] || 'all';
-const platforms = fs.readdirSync(path.join(ROOT, 'platforms'))
-  .filter(p => fs.statSync(path.join(ROOT, 'platforms', p)).isDirectory());
-const targets = which === 'all' ? platforms : [which];
+// 现在只有一个应用（平台在网页上选），所以只打一个包
+const targets = ['course-ai-helper'];
 
 const DIST = path.join(ROOT, 'dist');
 fs.mkdirSync(DIST, {recursive: true});
@@ -28,12 +27,17 @@ function copy(src, dst) {
   }
 }
 
+const APP_FILES = ['server.mjs', 'lib', 'public', 'platforms', 'console', 'examples', 'docs', 'test', 'scripts', 'package.json', 'config.example.toml', '启动.bat', '启动带调试浏览器.bat', 'start.bat', 'README.md', 'LICENSE', '.gitignore'];
 for (const p of targets) {
-  const src = path.join(ROOT, 'platforms', p);
-  if (!fs.existsSync(src)) { console.error('没有这个平台：' + p); continue; }
   const stage = path.join(DIST, p);
   rmrf(stage);
-  copy(src, stage);
+  fs.mkdirSync(stage, {recursive: true});
+  for (const f of APP_FILES) {
+    const src = path.join(ROOT, f);
+    if (!fs.existsSync(src)) continue;
+    const dst = path.join(stage, f);
+    if (fs.statSync(src).isDirectory()) copy(src, dst); else fs.copyFileSync(src, dst);
+  }
   // 没有 config.toml 就用 example 顶一个（用户解压后直接改）
   const cfg = path.join(stage, 'config.toml');
   const example = path.join(stage, 'config.example.toml');

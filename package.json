@@ -1,0 +1,21 @@
+{
+  "name": "course-ai-helper",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "在线课程 AI 答题助手：一个本地服务支持多个平台（中国大学MOOC / 超星学习通 / 智慧树），网页上选平台。多模态大模型 + 自研矩阵/微积分/概率统计工具解题；控制台脚本模式自动填答，CDP 模式只读出答案单。永不自动提交。",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node test/selftest.mjs",
+    "mathtest": "node test/math-test.mjs",
+    "realtest": "node test/real-test.mjs --paper examples/questions.json --expect examples/expected.json",
+    "fetch-node": "node scripts/fetch-node.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["chaoxing", "xuexitong", "zhihuishu", "mooc", "icourse163", "llm", "education", "automation"],
+  "license": "MIT"
+}

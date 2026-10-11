@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MOOC 测验 AI 答题助手 —— 本地服务端
+ * 在线课程 AI 答题助手 —— 本地服务端（多平台，平台模块见 platforms/<id>/index.mjs）
  *
  *  控制台脚本(helper.js) --POST /api/collect--> 本服务 --自动解题--> 答案
  *         ^                                                            |
@@ -20,11 +20,24 @@ import {exec} from 'node:child_process';
 import {runTool, toolSpecs} from './lib/tools.mjs';
 import {solvePaper, imageToDataUrl} from './lib/agent.mjs';
 import {loadConfig, publicConfig, configPath} from './lib/config.mjs';
+import {loadPlatforms, publicPlatform} from './lib/platforms.mjs';
+import {listTabs, findTab, CdpSession} from './lib/cdp.mjs';
+import {renderAnswerSheet, safeName} from './lib/report.mjs';
+
+// 当前平台的 CDP 能力（mode='cdp' 且导出了 readPaper 才有）
+const cdpState = {session: null, tab: null, port: null};
+const cdpReady = () => !!(current && current.mode === 'cdp' && typeof current.readPaper === 'function');
+const cdpPattern = () => (current && current.matchUrl) || /$^/;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const CONSOLE_DIR = path.join(__dirname, 'console');
-const DATA_DIR = path.join(__dirname, 'data');
+// ---- 多平台：一个服务支持所有平台，网页上切换
+const PLATFORMS = await loadPlatforms(__dirname);
+if (!PLATFORMS.length) { console.error('没有找到任何平台（platforms/<id>/index.mjs）'); process.exit(1); }
+const platformById = id => PLATFORMS.find(p => p.id === id) || null;
+// 网页上切换的平台记在小文件里（不改用户手写的 config.toml，保留注释）
+const platformStateFile = () => path.join(DATA_DIR, 'platform.txt');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');   // 自检会用临时目录
 fs.mkdirSync(DATA_DIR, {recursive: true});
 
 const TOKEN = crypto.randomBytes(16).toString('hex');
@@ -32,6 +45,15 @@ const TOKEN = crypto.randomBytes(16).toString('hex');
 const CONFIG_FILE = process.env.CONFIG_FILE || '';
 let loaded = loadConfig(__dirname, CONFIG_FILE);
 let CFG = loaded.config;
+
+// 当前平台：环境变量 > config.toml 的 [server] platform > 上次网页上选的 > 第一个
+function pickInitialPlatform() {
+  let saved = '';
+  try { if (fs.existsSync(platformStateFile())) saved = fs.readFileSync(platformStateFile(), 'utf8').trim(); } catch {}
+  const wanted = process.env.PLATFORM || CFG.server.platform || saved;
+  return platformById(wanted) || PLATFORMS[0];
+}
+let current = pickInitialPlatform();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -78,7 +100,8 @@ let currentStream = null;
 function archive() {
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = path.join(DATA_DIR, `${(session.paper && session.paper.tid) || 'quiz'}-${stamp}.json`);
+    // tid 可能是 URL（含 / : 等非法字符），必须洗成安全文件名
+    const file = path.join(DATA_DIR, `${safeName((session.paper && session.paper.tid) || 'quiz', 'quiz')}-${stamp}.json`);
     fs.writeFileSync(file, JSON.stringify({
       paper: session.paper, answers: session.answers, results: session.results,
       status: session.status, error: session.error, savedAt: new Date().toISOString(),
@@ -90,6 +113,41 @@ function archive() {
 }
 
 let solving = false;
+
+/**
+ * 把答案写成「答案单」文件（Markdown），给人照着手工填。
+ * 只写本机文件，**不在页面上做任何修改**（点鼠标填答案这件事永远是用户自己来）。
+ */
+function writeAnswerSheet() {
+  try {
+    const md = renderAnswerSheet(session.paper, session.answers, {
+      siteName: current ? current.name : '',
+      model: CFG.model.model,
+      url: (session.paper && session.paper.tid) || '',
+      solvedAt: new Date().toLocaleString('zh-CN'),
+    });
+    const name = safeName((session.paper && (session.paper.name || session.paper.title)) || 'answer');
+    const file = path.join(DATA_DIR, `${name}-答案单-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+    fs.writeFileSync(file, md, 'utf8');
+    session.reportFile = file;
+    emit({type: 'report', file: path.basename(file)});
+    return file;
+  } catch (e) {
+    emit({type: 'warn', message: '答案单生成失败：' + e.message});
+    return null;
+  }
+}
+
+/** 附加到浏览器里匹配该平台的标签（只读） */
+async function cdpAttach(port) {
+  if (cdpState.session) { try { cdpState.session.close(); } catch {} cdpState.session = null; }
+  const tab = await findTab(cdpPattern(), port);
+  if (!tab) return {ok: false, error: '没找到该平台的答题页标签。请在那个浏览器里打开作业答题界面。', tabs: await listTabs(port)};
+  cdpState.session = await CdpSession.attach(tab);
+  cdpState.tab = tab;
+  cdpState.port = port;
+  return {ok: true, tab, session: cdpState.session};
+}
 
 /** 收到一份试卷：建新会话 + （按配置）自动开始解题。不提交任何东西。 */
 async function handlePaperUpload(paper) {
@@ -133,12 +191,14 @@ async function startSolve(paper) {
   emit({type: 'start', total: (paper.questions || []).length, model: CFG.model.model, reasoning: CFG.model.reasoning_effort});
   const settings = settingsFromConfig();
   solvePaper({paper, settings, onEvent: emit})
-    .then(({answers, results}) => {
+    .then(async ({answers, results}) => {
       session.answers = answers;
       session.results = results;
       session.status = 'done';
       session.finishedAt = Date.now();
       archive();
+      // 只生成答案单供人工填写；本服务不会在页面上点任何东西
+      writeAnswerSheet();
     })
     .catch(e => {
       session.status = 'error';
@@ -196,11 +256,12 @@ function makeGate(max) {
 }
 const imageGate = makeGate(3);
 
-// 允许跨域的来源：本机页面 + MOOC 站点（控制台脚本要跨域调本服务）
-const ALLOWED_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/(www\.)?icourse163\.(org|com)$/;
+// 跨域白名单来自当前平台模块
+const defaultOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
+const allowedOriginRe = () => (current && current.allowOriginRe) || defaultOriginRe;
 function corsHeaders(req) {
   const origin = req.headers.origin;
-  if (!origin || !ALLOWED_ORIGIN_RE.test(origin)) return {};
+  if (!origin || !allowedOriginRe().test(origin)) return {};
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Content-Type,X-Helper-Token',
@@ -240,6 +301,14 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/config' && isSameOrigin(req)) {
     return send(res, 200, JSON.stringify({
       ok: true, token: TOKEN, configFile: loaded.note.file, created: loaded.note.created,
+      site: current ? {
+        id: current.id, name: current.name, shortName: current.shortName || current.name,
+        platformHint: current.platformHint || '', mode: current.mode || 'script',
+        readOnly: !!current.readOnly, cdp: cdpReady(),
+      } : null,
+      platforms: PLATFORMS.map(publicPlatform),
+      helperHint: current ? (current.helperHint || '') : '',
+      helperFile: current && current.helperFile ? '/' + current.helperFile : null,
       parseError: loaded.note.error, config: publicConfig(CFG),
     }), {'Content-Type': MIME['.json']});
   }
@@ -292,6 +361,68 @@ const server = http.createServer(async (req, res) => {
     return send(res, r.code, JSON.stringify(r.body), {'Content-Type': MIME['.json']});
   }
 
+  // ---- 切换平台（同源）
+  if (p === '/api/platform' && req.method === 'POST' && isSameOrigin(req)) {
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { body = {}; }
+    const next = platformById(String(body.id || ''));
+    if (!next) return send(res, 400, JSON.stringify({ok: false, error: '没有这个平台：' + body.id, platforms: PLATFORMS.map(x => x.id)}), {'Content-Type': MIME['.json']});
+    current = next;
+    if (cdpState.session) { try { cdpState.session.close(); } catch {} cdpState.session = null; cdpState.tab = null; }
+    CFG.server.platform = current.id;
+    try { fs.writeFileSync(platformStateFile(), current.id, 'utf8'); } catch {}
+    emit({type: 'info', message: `已切换到平台：${current.name}（${current.mode} 模式）`});
+    return send(res, 200, JSON.stringify({ok: true, site: {id: current.id, name: current.name, mode: current.mode, readOnly: !!current.readOnly, cdp: cdpReady()}}), {'Content-Type': MIME['.json']});
+  }
+
+  // ---- 下载答案单（Markdown，人工照着填）
+  if (p === '/api/report' && isSameOrigin(req)) {
+    if (!session.reportFile || !fs.existsSync(session.reportFile)) {
+      return send(res, 404, JSON.stringify({ok: false, error: '还没有答案单，先解一份卷子'}), {'Content-Type': MIME['.json']});
+    }
+    return sendFile(res, session.reportFile, path.basename(session.reportFile));
+  }
+
+  // ---- CDP：直连浏览器**只读**读取答题页（用于把题干藏进闭合 Shadow DOM 的平台）
+  if (cdpReady() && p === '/api/cdp/status' && isSameOrigin(req)) {
+    const port = Number(u.searchParams.get('port') || CFG.cdp.port);
+    let tabs = [], error = null;
+    try { tabs = await listTabs(port); } catch (e) { error = e.message; }
+    return send(res, 200, JSON.stringify({
+      ok: !error, port, error,
+      attached: cdpState.tab ? {url: cdpState.tab.url, title: cdpState.tab.title} : null,
+      tabs: tabs.map(t => ({title: t.title, url: t.url, matched: cdpPattern().test(t.url)})),
+    }), {'Content-Type': MIME['.json'], ...cors});
+  }
+
+  if (cdpReady() && p === '/api/cdp/collect' && req.method === 'POST' && isSameOrigin(req)) {
+    const port = Number(u.searchParams.get('port') || CFG.cdp.port);
+    let at;
+    try { at = await cdpAttach(port); } catch (e) {
+      return send(res, 502, JSON.stringify({ok: false, error: e.message}), {'Content-Type': MIME['.json'], ...cors});
+    }
+    if (!at.ok) return send(res, 404, JSON.stringify({ok: false, error: at.error, tabs: (at.tabs || []).map(t => t.url)}), {'Content-Type': MIME['.json'], ...cors});
+    let paper;
+    try { paper = await current.readPaper(cdpState.session); } catch (e) {
+      return send(res, 502, JSON.stringify({ok: false, error: '读卷失败：' + e.message}), {'Content-Type': MIME['.json'], ...cors});
+    }
+    if (!paper || !paper.questions.length) {
+      return send(res, 422, JSON.stringify({ok: false, error: '这个标签页上没读到题目，确认已进入答题界面', diagnose: await current.diagnose(cdpState.session).catch(() => null)}), {'Content-Type': MIME['.json'], ...cors});
+    }
+    const r = await handlePaperUpload(paper);
+    return send(res, r.code, JSON.stringify({...r.body, cdp: true, readOnly: true, attachedUrl: cdpState.tab && cdpState.tab.url}), {'Content-Type': MIME['.json'], ...cors});
+  }
+
+  if (cdpReady() && p === '/api/cdp/diagnose' && isSameOrigin(req)) {
+    const port = Number(u.searchParams.get('port') || CFG.cdp.port);
+    if (!cdpState.session) {
+      const at = await cdpAttach(port).catch(e => ({ok: false, error: e.message}));
+      if (!at.ok) return send(res, 502, JSON.stringify({ok: false, error: at.error}), {'Content-Type': MIME['.json']});
+    }
+    const d = await current.diagnose(cdpState.session).catch(e => ({error: e.message}));
+    return send(res, 200, JSON.stringify({ok: true, ...d}), {'Content-Type': MIME['.json']});
+  }
+
   // ---- 控制台脚本取答案（跨域，需要 token）
   if (p === '/api/answers') {
     if (!hasToken(req, u)) return send(res, 403, JSON.stringify({ok: false, error: 'token 不对'}), {'Content-Type': MIME['.json'], ...cors});
@@ -302,6 +433,10 @@ const server = http.createServer(async (req, res) => {
       total: (session.paper && session.paper.questions || []).length,
       error: session.error,
       autoFill: CFG.app.auto_fill,
+      reportFile: session.reportFile || null,
+      source: (session.paper && session.paper.source) || null,
+      reportFile: session.reportFile || null,
+      source: (session.paper && session.paper.source) || null,
       fillIntervalMs: CFG.app.fill_interval_ms, limitBackoffMs: CFG.app.limit_backoff_ms,
     }), {'Content-Type': MIME['.json'], ...cors});
   }
@@ -328,6 +463,7 @@ const server = http.createServer(async (req, res) => {
       seq: session.seq,
       events: session.events.filter(e => e.seq > effSince),
       answers: session.answers,
+      reportFile: session.reportFile || null,
       results: fresh ? session.results : undefined,
       done: Object.values(session.answers).filter(Boolean).length,
       total: (session.paper && session.paper.questions || []).length,
@@ -396,7 +532,12 @@ const server = http.createServer(async (req, res) => {
   // ---- 控制台脚本（注入后端地址与 token）
   if (p === '/console/helper.js' || p === '/console/collect.js') {
     const file = p.endsWith('helper.js') ? 'helper.js' : 'collect.js';
-    const src = fs.readFileSync(path.join(CONSOLE_DIR, file), 'utf8')
+    const rel = current && current.helperFile ? current.helperFile : 'console/helper.js';
+    const filePath = path.join(current ? current.dir : __dirname, path.basename(rel) === 'collect.js' ? 'console/collect.js' : rel);
+    if (!fs.existsSync(filePath)) {
+      return send(res, 404, `// 平台「${current ? current.name : '?'}」没有控制台脚本（mode=${current ? current.mode : '?'}）\n// 该平台走的是「只读 + 答案单」模式，不需要粘脚本。\n`, {'Content-Type': MIME['.js'], ...cors});
+    }
+    const src = fs.readFileSync(filePath, 'utf8')
       .replace('__BACKEND__', `http://127.0.0.1:${port}`)
       .replace('__TOKEN__', TOKEN);
     return send(res, 200, src, {
@@ -405,7 +546,11 @@ const server = http.createServer(async (req, res) => {
       ...cors,
     });
   }
-  if (p === '/console/fill.js') return sendFile(res, path.join(CONSOLE_DIR, 'fill.js'), u.searchParams.has('dl') ? 'fill.js' : undefined);
+  if (p === '/console/fill.js') {
+    const f = path.join(current ? current.dir : __dirname, 'console/fill.js');
+    if (!fs.existsSync(f)) return send(res, 404, '// 该平台没有 fill.js\n', {'Content-Type': MIME['.js'], ...cors});
+    return sendFile(res, f, u.searchParams.has('dl') ? 'fill.js' : undefined);
+  }
 
   // ---- 示例题目
   if (p.startsWith('/examples/')) {
@@ -447,7 +592,7 @@ function listen(p) {
   }
   const url = `http://127.0.0.1:${port}/`;
   console.log('');
-  console.log('  MOOC 测验 AI 答题助手已启动');
+  console.log('  ' + (current ? current.name : '') + ' AI 答题助手已启动');
   console.log('  ' + url);
   console.log(`  配置：${loaded.note.file}`);
   console.log(`  模型：${CFG.model.model}  思考：${CFG.model.reasoning_effort}  并发：${CFG.model.concurrency}`);

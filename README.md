@@ -2,14 +2,14 @@
 
 # course-ai-helper
 
-**在线课程 AI 答题助手** · 控制台粘一次脚本，剩下的交给多模态大模型
+**在线课程 AI 答题助手** · 一个本地服务搞定多个平台，网页上选平台、粘一次脚本，剩下的交给多模态大模型
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#零依赖)
-[![Tests](https://img.shields.io/badge/tests-106%20math%20%2B%2056%20app-success.svg)](#可信度拿-scipy--sympy-对过账)
+[![Tests](https://img.shields.io/badge/tests-106%20math%20%2B%2067%20app-success.svg)](#可信度拿-scipy--sympy-对过账)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Platform](https://img.shields.io/badge/平台-中国大学MOOC%20%7C%20超星学习通-blue.svg)](#平台支持)
+[![Platform](https://img.shields.io/badge/平台-中国大学MOOC%20%7C%20超星%20%7C%20智慧树-blue.svg)](#平台支持)
 
 采集题目 → 上传本机助手 → 多模态大模型（带**自研数学引擎**）解题 → **答案自动填回页面**
 
@@ -51,18 +51,19 @@ MOOC / 超星的题目**越来越多是图片**（公式、矩阵、几何图）
 
 ```bash
 git clone https://github.com/weiza0v0/course-ai-helper
-cd course-ai-helper/platforms/mooc
+cd course-ai-helper
 cp config.example.toml config.toml      # 填上你的 api_key
-node server.mjs                          # 打开 http://127.0.0.1:8787/
+node server.mjs                          # 打开 http://127.0.0.1:8787/ ，在网页上选平台
 ```
 
-**Windows 免安装**：先 `node scripts/fetch-node.mjs mooc` 拉一个便携 node，然后双击 `启动.bat`。
+**Windows 免安装**：先 `node scripts/fetch-node.mjs` 拉一个便携 node，然后双击 `启动.bat`。
 
 然后按网页上的四步走：
 
 | 步骤 | 做什么 |
 | --- | --- |
-| ① | 网页上点「复制一键脚本」 |
+| ⓪ | 网页上选平台（MOOC / 超星 / 智慧树） |
+| ① | 网页上点「复制一键脚本」（智慧树模式没有脚本，直接点「读取当前页面并解题」） |
 | ② | 到课程答题页 `F12` 控制台（提示不允许粘贴就先输 `allow pasting`）→ 粘贴 → 回车 |
 | ③ | 回网页看实时进度：每题调了什么工具、思考了什么、答案是什么 |
 | ④ | 答案自动勾进页面，**你核对后自己点提交** |
@@ -119,7 +120,7 @@ $ node test/math-test.mjs
 八类求导、七类定积分（含 ∫₀¹e^(-x²)、∫₋₁¹|x|）、三类极限（含发散）、求根、Taylor、级数；
 t/z/卡方/方差分析/回归/相关；六种分布的 pdf/cdf/分位数；Γ/B/erf/erfc、组合排列。
 
-应用层：`node test/selftest.mjs` —— **56 项全绿**（配置、鉴权、六个工具、答案解析回归、控制台脚本契约、上传→解题→轮询全链路）。
+应用层：`node test/selftest.mjs` —— **67 项全绿**（配置、鉴权、六个工具、答案解析回归、答案单渲染、**平台注册与切换**、各平台能力契约、上传→解题→轮询全链路）。
 
 真实模型端到端（10 道真题，答案由 100 分交卷确认）：
 
@@ -136,44 +137,56 @@ t/z/卡方/方差分析/回归/相关；六种分布的 pdf/cdf/分位数；Γ/B
 
 ## 平台支持
 
-| 平台 | 状态 | 说明 |
+一个服务同时支持多个平台，**在网页上选**（切换会记在 `data/platform.txt`，不用改 `config.toml`）。
+
+| 平台 | 模式 | 状态 |
 | --- | --- | --- |
-| **中国大学 MOOC**（icourse163.org） | ✅ 完整可用 | 已实测：真实测验页 10/10 自动勾选、**未提交** |
-| **超星学习通**（chaoxing.com） | 🚧 **求 PR** | 服务端 / 模型 / 数学工具全部就绪，**差"答题态 DOM"的校准** |
+| **中国大学 MOOC**（icourse163.org） | 控制台脚本 | ✅ 完整可用，已实测真实测验页 10/10 自动勾选、**未提交** |
+| **超星学习通**（chaoxing.com） | 控制台脚本 | ✅ 服务端/脚本就绪；答题态 DOM 待社区用真实未作答作业校准（见 [docs/chaoxing-adapter.md](docs/chaoxing-adapter.md)） |
+| **智慧树**（zhihuishu.com） | **CDP 只读** | ✅ 读卷 + 解题 + 出答案单；🚫 **刻意不做自动填答**（见下） |
 
-超星为什么还差一步：作者手上的账号 11 个作业都已提交、该课无考试，拿不到"正在作答"的页面。
-已经把摸到的结构（iframe 套娃链、作业列表行、已批阅详情页的完整 HTML）整理成了
-**[docs/chaoxing-adapter.md](docs/chaoxing-adapter.md)** —— 你在有未作答作业的账号上跑一次
-`__CX_HELPER__.diagnose()` 把输出贴到 issue，就能一次改对。
+### 为什么智慧树只能"只读"
 
----
+智慧树把题干预设在**闭合 Shadow DOM** 里 —— 页面内的 JS 一律读不到
+（`textContent`/`innerHTML`/`Range`/选区/`attachShadow` 钩子/Vue 数据 逐个实测，全是空的），
+只有浏览器层 CDP 的 `DOM.getDocument{pierce:true}` 能穿透。
+
+而一旦在页面上点选项，**脚本点击的 `event.isTrusted === false` 会立刻暴露**。
+实测中该账号确实弹出了平台的告警：
+
+> 检测到异常脚本，为保证您正常答题，请您关闭插件，刷新页面后重新答题！
+
+所以这个平台的适配**主动砍掉了自动填答**，只做：
+**只读读卷 → 模型解题 → 写成「答案单」Markdown → 你自己动手填。**
+零风险，还省掉了思考的时间。细节和踩过的坑都在 [docs/zhihuishu-adapter.md](docs/zhihuishu-adapter.md)。
 
 ## 仓库结构
 
 ```
 course-ai-helper/
-├─ platforms/
-│  ├─ mooc/          # 中国大学 MOOC —— 完整可用（可整个文件夹拷走分发）
-│  │  ├─ console/    #   控制台脚本：collect / helper / fill
-│  │  ├─ lib/        #   ├ 共享核心（见下）
-│  │  ├─ public/     #   ├
-│  │  ├─ server.mjs  #   ┤
-│  │  ├─ test/       #   └ 自检 + 数学校验
-│  │  ├─ config.example.toml
-│  │  └─ 启动.bat
-│  └─ chaoxing/      # 超星学习通 —— 同上结构，答题态待社区校准
-├─ scripts/
-│  ├─ sync-core.mjs  # 把 mooc 的共享核心同步到其它平台（避免多份核心跑偏）
-│  ├─ fetch-node.mjs # 下载便携 node.exe（80MB，不进仓库）
-│  └─ package.mjs    # 打包成可分发 zip
-├─ docs/             # 截图 + 超星适配笔记
-└─ test/             # （每个平台里各有一份，由 sync-core 保证一致）
+├─ server.mjs              # 唯一的本地服务（多平台，网页上切换）
+├─ lib/                    # 共享核心（只有一份）
+│  ├─ agent.mjs            #   模型调用 + 工具循环 + 答案解析
+│  ├─ tools.mjs            #   六个工具
+│  ├─ math/                #   自研数学引擎（零依赖）
+│  ├─ cdp.mjs              #   零依赖 CDP 客户端（Node 22+ 自带 WebSocket）
+│  ├─ report.mjs           #   答案单渲染（Markdown）
+│  ├─ platforms.mjs        #   平台注册表
+│  ├─ config.mjs / toml.mjs
+├─ platforms/              # 每个平台只有「标识 + 脚本 + 适配」，不再各带一份核心
+│  ├─ mooc/index.mjs       + console/{helper,collect,fill}.js
+│  ├─ chaoxing/index.mjs   + console/helper.js
+│  └─ zhihuishu/index.mjs  （CDP 只读，零点击代码）
+├─ public/                 # 一个前端（含平台选择器）
+├─ test/                   # selftest（67 项）+ 数学校验（106 项）
+├─ scripts/                # fetch-node.mjs（拉便携 node）/ package.mjs（打包）
+├─ docs/                   # 截图 + 各平台适配笔记
+├─ 启动.bat                 # Windows 双击即用
+└─ 启动带调试浏览器.bat       # 智慧树这类平台用（带 --remote-debugging-port 的 Chrome）
 ```
 
-**为什么每个平台都放一份核心？** 为了让每个平台目录都能"拷走一个文件夹 + 一个 `node.exe` 就能跑"。
-两份核心由 `node scripts/sync-core.mjs` 保证一致，CI 可以跑 `--check`。
-
----
+**为什么不再按平台分发**：核心本来就只有一份，按平台各拷一份只会带来"改了一处忘了另一处"的漂移风险
+（这个坑真踩过：同步方向搞反，把新写的功能覆盖回旧版）。现在平台专属的只剩 `index.mjs` 和一个控制台脚本。
 
 ## 配置
 

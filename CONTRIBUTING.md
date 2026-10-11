@@ -23,12 +23,12 @@
 
 智慧树、雨课堂、学堂在线、钉钉课堂…… 适配一个平台基本只需要：
 
-- `console/helper.js`：`collect()`（读题）+ `fill()`（写答案）
-- `config.example.toml`：端口错开
-- `server.mjs`：CORS 白名单加域名
-- 一个 `test/fill-test.html` 仿真页
+- `platforms/<id>/index.mjs`：`id / name / mode / platformHint / allowOriginRe`（+ `mode='cdp'` 时导出 `readPaper()`）
+- `platforms/<id>/console/helper.js`：`collect()`（读题）+ `fill()`（写答案）
+- 不用改 `server.mjs`、不用改端口 —— 服务会自动发现新平台，网页上就多一个选项
 
-共享核心（`lib/`、`public/`、`server.mjs`）**不要改动平台特有逻辑**，改完跑 `node scripts/sync-core.mjs`。
+平台专属的只有 `platforms/<id>/index.mjs`（标识/模式/跨域白名单）和一个控制台脚本 `console/helper.js`；
+其余（`lib/`、`public/`、`server.mjs`）是**所有平台共用的一份**，改动要保证其它平台不受影响。
 
 ### 🥉 3. 数学引擎补强
 
@@ -47,14 +47,10 @@
 
 ```bash
 # 1. 跑测试
-cd platforms/mooc
-node test/selftest.mjs        # 应用层，56 项，离线可跑
+cd course-ai-helper
+node test/selftest.mjs        # 应用层，67 项，离线可跑（含平台注册/切换/各平台契约）
 python3 test/math-ref.py > test/math-ref.json && node test/math-test.mjs   # 数学层，106 项
 node test/real-test.mjs --paper examples/questions.json --expect examples/expected.json   # 真实模型（要 key）
-
-# 2. 改了共享核心就同步
-node scripts/sync-core.mjs
-node scripts/sync-core.mjs --check    # CI 用
 ```
 
 ## 硬性要求

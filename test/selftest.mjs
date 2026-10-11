@@ -41,7 +41,7 @@ function freePort() {
 const children = [];
 function launch(script, env) {
   const p = spawn(process.execPath, [path.join(ROOT, script)], {
-    cwd: ROOT, env: {...process.env, ...env}, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: ROOT, env: {...process.env, ...env, DATA_DIR: TMP }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   p.stdout.on('data', () => {});
   p.stderr.on('data', d => results.push('  [child stderr] ' + String(d).trim().slice(0, 200)));
@@ -62,9 +62,9 @@ try {
   serverPort = await freePort();
   mockPort = await freePort();
   BASE = `http://127.0.0.1:${serverPort}`;
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mooc-helper-test-'));
+  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'course-ai-helper-test-'));
   fs.writeFileSync(path.join(TMP, 'config.toml'), `[server]\nport = ${serverPort}\nopen_browser = false\n\n[model]\nbase_url = "http://127.0.0.1:${mockPort}/v1"\napi_key = "mock-key"\nmodel = "mock-vl"\nreasoning_effort = "max"\nconcurrency = 1\nmax_tool_rounds = 4\n\n[app]\nauto_solve = true\nauto_fill = true\npoll_seconds = 1\n`, 'utf8');
-  console.log(`\n超星 AI Helper 自检\n${'='.repeat(54)}\n  server=${serverPort} mock=${mockPort}\n`);
+  console.log(`\n在线课程 AI 答题助手 自检\n${'='.repeat(54)}\n  server=${serverPort} mock=${mockPort}\n`);
 } catch (e) { console.error('准备失败：' + e.message); process.exit(1); }
 
 launch('test/mock-llm.mjs', {MOCK_PORT: String(mockPort)});
@@ -106,24 +106,77 @@ api_key = ''
   const cfgRes = await (await fetch(BASE + '/api/config')).json();
   TOKEN = cfgRes.token;
   TOKEN && cfgRes.config.model.api_key === undefined ? ok('/api/config 返回 token 且不含 key') : no('/api/config 异常');
+  cfgRes.site && cfgRes.site.id ? ok(`/api/config：当前平台 ${cfgRes.site.id}（${cfgRes.site.mode} 模式）`) : no('站点标识异常', JSON.stringify(cfgRes.site));
+  Array.isArray(cfgRes.platforms) && cfgRes.platforms.length >= 2
+    ? ok(`/api/config：平台注册表加载了 ${cfgRes.platforms.length} 个平台`) : no('平台注册表异常', JSON.stringify(cfgRes.platforms));
 
   const html = await (await fetch(BASE + '/')).text();
-  html.includes('复制一键脚本') && !html.includes('自动交卷') && html.includes('超星') ? ok('前端页面：一键脚本、无自动交卷') : no('前端页面内容异常');
+  html.includes('复制一键脚本') && !html.includes('自动交卷') ? ok('前端页面：一键脚本、无自动交卷') : no('前端页面内容异常');
   (await fetch(BASE + '/style.css')).ok ? ok('样式表可访问') : no('样式表不可访问');
   (await (await fetch(BASE + '/app.js')).text()).includes('/api/state') ? ok('前端脚本：走 /api/state 轮询') : no('前端脚本异常');
 
-  // ---------------- 控制台脚本（超星版是 DOM 解析，只有一个 helper.js）
+  // ---------------- 多平台切换
+  const other = (cfgRes.platforms || []).find(p => p.id !== cfgRes.site.id);
+  if (other) {
+    const sw = await (await fetch(BASE + '/api/platform', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: other.id})})).json();
+    const after = await (await fetch(BASE + '/api/config')).json();
+    sw.ok && after.site.id === other.id ? ok(`平台切换：${cfgRes.site.id} → ${other.id}`) : no('平台切换失败', JSON.stringify(sw));
+    const bad = await fetch(BASE + '/api/platform', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: '不存在的平台'})});
+    bad.status === 400 ? ok('平台切换：非法 id 被拒') : no('非法平台未被拒绝');
+    // 切回默认，后面的脚本用例还指望它
+    await fetch(BASE + '/api/platform', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: cfgRes.site.id})});
+  } else {
+    ok('平台切换：只有一个平台，跳过');
+    ok('平台切换：只有一个平台，跳过');
+  }
+  // 平台能力与只读约束
+  for (const pl of (cfgRes.platforms || [])) {
+    const mod = await import(path.join(ROOT, 'platforms', pl.id, 'index.mjs')).catch(() => null);
+    if (!mod) { no(`平台 ${pl.id} 模块加载失败`); continue; }
+    if (pl.mode === 'cdp') {
+      typeof mod.readPaper === 'function' ? ok(`平台 ${pl.id}：CDP 只读读卷已就绪`) : no(`平台 ${pl.id} 缺 readPaper`);
+      !/\.click\(|fillPaper|saveDraft/.test(fs.readFileSync(path.join(ROOT, 'platforms', pl.id, 'index.mjs'), 'utf8'))
+        ? ok(`平台 ${pl.id}：适配层零点击（只读约束）`) : no(`平台 ${pl.id} 适配层含点击/填答代码`);
+    } else {
+      fs.existsSync(path.join(ROOT, 'platforms', pl.id, mod.helperFile || 'console/helper.js'))
+        ? ok(`平台 ${pl.id}：控制台脚本存在`) : no(`平台 ${pl.id} 缺控制台脚本`);
+    }
+  }
+
+  // ---------------- 控制台脚本
   const helper = await (await fetch(BASE + '/console/helper.js')).text();
   helper.includes(`http://127.0.0.1:${serverPort}`) ? ok('helper.js：后端地址已注入实际端口') : no('helper.js 端口注入失败');
   helper.includes(TOKEN) ? ok('helper.js：token 已注入') : no('helper.js token 注入失败');
   helper.includes('/api/collect') && helper.includes('/api/answers') ? ok('helper.js：上传 + 轮询答案') : no('helper.js 流程缺失');
-  !/btn\.click\(\)|submitBtn\.click\(\)/.test(helper) && /本工具不会替你提交/.test(helper)
-    ? ok('helper.js：不会自动提交') : no('helper.js 仍有提交动作');
-  /intervalMs/.test(helper) && /blockDialog/.test(helper) && /复核发现/.test(helper)
-    ? ok('helper.js：限速勾选 + 限流退避 + 复核补选') : no('helper.js 缺限流防护');
-  /diagnose/.test(helper) && /Q_SELECTORS/.test(helper)
-    ? ok('helper.js：内置 DOM 诊断（采集不到时可回帖）') : no('helper.js 缺诊断能力');
-  /mark_name|mark_letter|questionLi/.test(helper) ? ok('helper.js：覆盖超星实测类名') : no('helper.js 未覆盖超星类名');
+  !/j-submitBtn[\s\S]{0,120}\.click\(\)/.test(helper) ? ok('helper.js：不会自动点提交') : no('helper.js 仍有自动提交');
+
+  const fill = await (await fetch(BASE + '/console/fill.js')).text();
+  const filled = fill.replace('/*__ANSWERS__*/ {}', '{"123":"D"}');
+  filled.includes('const ANSWERS = {"123":"D"};') ? ok('fill.js：答案占位符可注入') : no('fill.js 占位符失效');
+  !fill.includes('AUTO_SUBMIT') && !/submitBtn\.click\(\)/.test(fill) ? ok('fill.js：只勾选不交卷') : no('fill.js 仍会交卷');
+  fill.includes('u-icon-correct') ? ok('fill.js：支持判断题按"正确/错误"映射') : no('fill.js 缺判断题映射');
+  // ---- 平台并发限制防护
+  /FILL_INTERVAL_MS\s*=\s*\d+/.test(fill) && /limitDialog/.test(fill)
+    ? ok('fill.js：限速勾选 + 限流弹窗退避') : no('fill.js 缺限流防护');
+  /intervalMs/.test(helper) && /limitDialog/.test(helper) && /复核发现/.test(helper)
+    ? ok('helper.js：限速勾选 + 限流退避 + 复核补勾') : no('helper.js 缺限流防护');
+  pcBefore.app && pcBefore.app.fill_interval_ms > 0 && pcBefore.app.limit_backoff_ms > 0
+    ? ok('配置：暴露 fill_interval_ms / limit_backoff_ms') : no('配置缺限流参数', JSON.stringify(pcBefore.app));
+
+  // ---------------- 答案单渲染
+  const report = await import('../lib/report.mjs');
+  const demoPaper = {
+    name: 'T', source: 'cdp', questions: [
+      {index: 1, qid: 'q1', typeName: '多选', stem: '题干一', options: [{letter: 'A', text: '甲'}, {letter: 'B', text: '乙'}, {letter: 'C', text: '丙'}, {letter: 'D', text: '丁'}]},
+      {index: 2, qid: 'q2', typeName: '判断', stem: '题干二', options: [{letter: 'A', text: '错'}, {letter: 'B', text: '对'}]},
+      {index: 3, qid: 'q3', typeName: '填空', stem: '题干三', options: []},
+    ],
+  };
+  const mdSheet = report.renderAnswerSheet(demoPaper, {q1: 'AC', q2: 'B', q3: '答案文本'}, {siteName: 'X', model: 'm'});
+  /1\. AC/.test(mdSheet) && /- \[x\] \*\*A\.\*\*/.test(mdSheet) && /- \[ \] \*\*B\.\*\*/.test(mdSheet)
+    ? ok('答案单：多选勾选与速查表正确') : no('答案单多选渲染错误');
+  mdSheet.includes('答案文本') && mdSheet.includes('自己点鼠标填') ? ok('答案单：填空与只读声明在') : no('答案单缺内容');
+  report.safeName('a/b:c*d?e"f<g>h|i') === 'a-b-c-d-e-f-g-h-i' ? ok('答案单：文件名清洗（URL 型 tid 也能存档）') : no('safeName 未清洗合法字符');
 
   // ---------------- 答案解析回归（真实踩过的坑）
   const TRICKY = '题干矩阵为 \\(a_{ij}=\\max\\{i,j\\}\\)，逐次相邻两行相减可得 \\(D_n=(-1)^{n-1}n\\)。\n用工具复核：\\(n=3\\) 时 \\(D_3=3\\)，并不等于 \\(-3\\)。因此"D_n=-n"并非对所有 \\(n\\) 成立，命题错误，选 A。\n```json\n{"answer":"A","confidence":0.99,"reason":"x"}\n```';
@@ -155,7 +208,7 @@ api_key = ''
   const c3 = await runTool('calc', {expression: '1e5 + 2'});
   /100002/.test(c3.result) ? ok('calc：科学计数法正常') : no('calc 误杀科学计数法');
   const wf = await runTool('web_fetch', {url: BASE + '/', max_chars: 1500});
-  wf.result.includes('超星学习通 AI 答题助手') ? ok('web_fetch：抓取本地页面') : no('web_fetch 失败');
+  wf.result.includes('在线课程 AI 答题助手') ? ok('web_fetch：抓取本地页面') : no('web_fetch 失败');
   const ws = await runTool('web_search', {query: '线性代数 行列式 性质', max_results: 3});
   /搜索引擎：/.test(ws.result) ? ok('web_search：可用') : info('web_search 当前网络不可用（不影响其它功能）');
   const tt = await (await fetch(BASE + '/api/tool-test', {method: 'POST'})).json();
