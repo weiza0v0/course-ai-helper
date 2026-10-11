@@ -116,6 +116,12 @@ $ node cli.mjs chaoxing "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?...
 找不到时（浏览器装在非常规位置、便携版、小众浏览器）会**问你一次**，并把答案写进
 `config.toml` 的 `[cdp] browser`，以后不再问；也可以直接 `--browser "<路径>"`。
 
+### 📖 想手动指定 profile？看这份指引
+
+**[docs/find-profile.md](docs/find-profile.md)** —— 怎么在浏览器里找到自己的 profile 目录
+（一句话：地址栏敲 `chrome://version`，看「配置文件路径 / Profile Path」），
+以及为什么填进去的那一行会自动去掉末尾的 `\Default`。
+
 ### ⚠ `browser` 和 `profile` 是两件事
 
 | 配置 | 管什么 |

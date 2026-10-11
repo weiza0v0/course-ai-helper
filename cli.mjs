@@ -181,6 +181,29 @@ export function profileCandidates(exePath) {
   return list;
 }
 
+/**
+ * 把用户填的路径规范化。
+ *
+ * 坑：`chrome://version` 里的「配置文件路径」给的是 `...\User Data\Default`，
+ * 而 `--user-data-dir` 要的是**上一级** `...\User Data`。
+ * 如果直接把 `...\Default` 当 user-data-dir，Chrome 会在它里面再建一个 Default —— 等于一个全新 profile，白登录。
+ * 所以这里自动往上退一级。
+ */
+export function normalizeProfileDir(p) {
+  if (!p) return {dir: p, adjusted: false};
+  const orig = String(p);
+  let d = orig.replace(/[\/]+$/, '');
+  const base = path.basename(d);
+  const isProfileFolder = /^Default$/i.test(base) || /^Profile \d+$/i.test(base) || /^Guest Profile$/i.test(base);
+  if (!isProfileFolder) return {dir: d, adjusted: d !== orig};
+  const parent = path.dirname(d);
+  if (parent && parent !== d && path.dirname(parent) !== parent) {
+    // 指到 Default / Profile N 里，一定是想指 User Data —— 无条件上退一级
+    return {dir: parent, adjusted: true, parentLooksUserData: path.basename(parent).toLowerCase() === 'user data' || fs.existsSync(path.join(parent, 'Local State'))};
+  }
+  return {dir: d, adjusted: d !== orig};
+}
+
 /** 看起来像个真 profile 吗（有 Default/ 或 Local State）—— 免得选到空壳目录 */
 function looksLikeProfile(dir) {
   try {
@@ -208,7 +231,14 @@ function helperProfileDir() {
  *   3) 否则用助手专用 profile（登录一次，之后一直记得）
  */
 async function pickProfile(explicit, exePath, {interactive = true} = {}) {
-  if (explicit) return {dir: explicit, why: '指定的 profile（--profile / [cdp] profile）', real: false};
+  if (explicit) {
+    const {dir, adjusted} = normalizeProfileDir(explicit);
+    if (adjusted && dir !== explicit) {
+      info(c(`    路径已自动上退一级：${explicit}`, 'dim'));
+      info(c(`                  →  ${dir}   （--user-data-dir 要的是 User Data，不是里面的 Default）`, 'dim'));
+    }
+    return {dir, why: '指定的 profile（--profile / [cdp] profile）', real: false};
+  }
   const running = await browserRunning();
   const {dir: def, name: defName, checked} = findDefaultProfile(exePath);
   if (def && !running) {
@@ -221,11 +251,15 @@ async function pickProfile(explicit, exePath, {interactive = true} = {}) {
       warn('找到了浏览器，但没找到它的 profile（登录态）目录');
       info(c('    填 browser 只是告诉用哪个程序；用哪套登录态是另一件事（--user-data-dir）', 'dim'));
       info(c('    便携版/绿色版一般在 exe 同级或上级的 User Data；不确定就回车用助手 profile（登录一次）', 'dim'));
-      const p = await ask('  浏览器 User Data 目录（直接回车=用助手专用 profile）: ');
+      info(c('    去哪找？浏览器地址栏输入  chrome://version  （Edge 是 edge://version）', 'dim'));
+      info(c('    看「配置文件路径 / Profile Path」，把那一行贴进来即可（会自动去掉末尾的 \\Default）', 'dim'));
+      const p = await ask('  浏览器配置文件路径（直接回车=用助手专用 profile）: ');
       if (p) {
-        if (fs.existsSync(p)) {
-          try { saveCdpSetting(__dirname, process.env.CONFIG_FILE || '', 'profile', p); ok('已记住：[cdp] profile'); } catch {}
-          return {dir: p, why: '你填的 profile（[cdp] profile）', real: false};
+        const {dir, adjusted} = normalizeProfileDir(p);
+        if (adjusted && dir !== p) info(c(`    已自动上退一级 → ${dir}`, 'dim'));
+        if (fs.existsSync(dir)) {
+          try { saveCdpSetting(__dirname, process.env.CONFIG_FILE || '', 'profile', dir); ok('已记住：[cdp] profile = ' + dir); } catch {}
+          return {dir, why: '你填的 profile（[cdp] profile）', real: false};
         }
         warn('这个目录不存在，改用助手专用 profile');
       }
@@ -413,6 +447,15 @@ async function selftest() {
   t('profile 探测：按浏览器家族过滤（填了 Edge 就不去找 Chrome）',
     !/Chrome/.test(edgeCands) && /Edge/.test(edgeCands), edgeCands);
   t('profile 探测：没给 exe 时也给标准位置', profileCandidates('').length > 0);
+  const od = normalizeProfileDir;
+  const sep = path.sep;
+  t('profile 规范化：…/User Data/Default → …/User Data',
+    od(`${sep}tmp${sep}ud${sep}Default`).dir === `${sep}tmp${sep}ud`,
+    od(`${sep}tmp${sep}ud${sep}Default`).dir);
+  t('profile 规范化：…/User Data/Profile 2 → …/User Data',
+    od(`${sep}tmp${sep}ud${sep}Profile 2`).dir === `${sep}tmp${sep}ud`);
+  t('profile 规范化：已经是 User Data 就原样',
+    od(`${sep}tmp${sep}User Data`).dir === `${sep}tmp${sep}User Data`);
 
   // 2. 桥接层
   const {BRIDGE_SOURCE: BS} = await import('./lib/bridge.mjs');
