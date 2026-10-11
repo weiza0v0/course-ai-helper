@@ -38,6 +38,8 @@ web_result_chars = 1200
 # 例（deepseek）：输入 2 / 输出 8  → price_in = 2, price_out = 8
 price_in = 0
 price_out = 0
+# 缓存命中的输入价（元 / 百万 token）。留 0 = 自动按 price_in 的 1/10（DeepSeek 命中价大约就是这个量级）
+price_cache_in = 0
 # 关掉就退化成纯推理，模型不能调工具验证
 use_tools = true
 # 单次模型请求超时（秒）

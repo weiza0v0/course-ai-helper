@@ -559,7 +559,7 @@ async function selftest() {
 async function solve(paper, settings) {
   const t0 = Date.now();
   const total = paper.questions.length;
-  let usage = {prompt: 0, completion: 0, requests: 0, web: 0};
+  let usage = {prompt: 0, completion: 0, requests: 0, web: 0, cacheHit: 0, cacheMiss: 0};
   const qState = new Map();
   const label = q => `[${q.index}/${total}]`;
   let toolCalls = 0;
@@ -591,7 +591,8 @@ async function solve(paper, settings) {
           bad(`${label(q)} ${ev.message}`);
           break;
         case 'usage':
-          usage = {prompt: ev.prompt || 0, completion: ev.completion || 0, requests: ev.requests || 0, web: ev.web || 0};
+          usage = {prompt: ev.prompt || 0, completion: ev.completion || 0, requests: ev.requests || 0,
+                   web: ev.web || 0, cacheHit: ev.cacheHit || 0, cacheMiss: ev.cacheMiss || 0};
           break;
         case 'answer': {
           const a = Array.isArray(ev.answer) ? ev.answer.join('') : String(ev.answer ?? '');
@@ -611,14 +612,17 @@ async function solve(paper, settings) {
   if (usage.prompt || usage.completion) {
     const k = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const pin = Number(settings.priceIn) || 0, pout = Number(settings.priceOut) || 0;
+    const pCache = Number(settings.priceCacheIn) > 0 ? Number(settings.priceCacheIn) : pin / 10;   // 默认按命中价 1/10
+    const hit = usage.cacheHit || 0, miss = usage.cacheMiss || Math.max(0, usage.prompt - hit);
+    const rate = usage.prompt ? Math.round(hit / usage.prompt * 100) : 0;
     let cost = '';
     if (pin || pout) {
-      const y = usage.prompt / 1e6 * pin + usage.completion / 1e6 * pout;
+      const y = hit / 1e6 * pCache + miss / 1e6 * pin + usage.completion / 1e6 * pout;
       cost = ` · 估算 ¥${y < 1 ? y.toFixed(3) : y.toFixed(2)}`;
     } else {
       cost = c(' · （想估算金额就在 config.toml 填 price_in / price_out）', 'dim');
     }
-    info(c(`    💰 用量：输入 ${k(usage.prompt)} · 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求，其中联网 ${usage.web || 0} 次）`, 'dim') + cost);
+    info(c(`    💰 用量：输入 ${k(usage.prompt)}（缓存命中 ${k(hit)} · ${rate}%）· 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求，联网 ${usage.web || 0} 次）`, 'dim') + cost);
   }
   return {answers, results, ms, usage};
 }
@@ -850,7 +854,7 @@ async function main() {
     baseUrl: CFG.model.base_url, apiKey: CFG.model.api_key, model: CFG.model.model,
     temperature: CFG.model.temperature, concurrency: CFG.model.concurrency,
     // 每题最多让模型调几轮工具：config.toml 的 [model] max_tool_rounds，可用 --rounds 临时覆盖
-    priceIn: CFG.model.price_in, priceOut: CFG.model.price_out,
+    priceIn: CFG.model.price_in, priceOut: CFG.model.price_out, priceCacheIn: CFG.model.price_cache_in,
     maxRounds: Number.isFinite(roundsOverride) && roundsOverride > 0 ? Math.min(roundsOverride, 20) : CFG.model.max_tool_rounds,
     toolMode: CFG.model.tool_mode,
     maxToolResultChars: CFG.model.max_tool_result_chars,
