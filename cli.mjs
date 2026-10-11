@@ -365,6 +365,26 @@ async function resolveBrowserExe(cfg, opts, {interactive = true} = {}) {
   return p;
 }
 
+/**
+ * 拿到一个可用的浏览器：
+ *   1) 调试端口上已经有浏览器 → 直接用（**不需要** exe，也问不到它用哪个 profile）
+ *   2) 没有 → 才需要 exe + profile，然后自己启动
+ */
+async function ensureBrowserSmart(port, startUrl, CFG, opts) {
+  try {
+    const tabs = await listTabs(port);
+    ok(`已有浏览器在调试端口 ${port} 上（直接用它，不会另开窗口）`);
+    return {ok: true, launched: false, tabs, profile: null, attached: true};
+  } catch {}
+  const exe = await resolveBrowserExe(CFG, opts);
+  const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '', exe);
+  const br = await ensureBrowser(port, startUrl, prof.dir, exe);
+  info(c(`    profile：${br.profile || prof.dir}`, 'dim'));
+  info(c(`    ${prof.why}`, 'dim'));
+  explainProfileSearch(prof);
+  return br;
+}
+
 /** 浏览器调试端口连不上就用它拉一个 Chrome/Edge（带 --remote-debugging-port） */
 async function ensureBrowser(port, url, profileDir, exePath) {
   try { const t = await listTabs(port); return {ok: true, launched: false, tabs: t}; } catch {}
@@ -698,13 +718,8 @@ async function main() {
 
   // ---- 只打开登录窗口（不需要平台）
   if (flags.has('login')) {
-    const exe = await resolveBrowserExe(CFG, opts);
-    const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '', exe);
-    const b = await ensureBrowser(port, opts.url, prof.dir, exe);
-    ok(`浏览器已就绪（端口 ${port}）`);
-    info(c(`    profile：${b.profile || prof.dir}`, 'dim'));
-    info(c(`    ${prof.why}`, 'dim'));
-    explainProfileSearch(prof);
+    const loginPlatform = matchPlatform(platforms, opts.platform) || platforms[0];
+    await ensureBrowserSmart(port, opts.url || loginPlatform?.homeUrl || 'about:blank', CFG, opts);
     if (opts.url) { const t = await resolveTab(port, opts.url); if (t) info('    已打开：' + String(opts.url).slice(0, 90)); }
     info('');
     info('  请在窗口里登录并进入答题界面，然后重跑：');
@@ -740,13 +755,9 @@ async function main() {
   }
 
   // ---- 浏览器：没开就拉起来（尽量借用你日常的登录态）
-  const exe = await resolveBrowserExe(CFG, opts);
-  const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '', exe);
-  const br = await ensureBrowser(port, url, prof.dir, exe);
-  ok(`浏览器就绪（端口 ${port}${br.launched ? '，刚启动' : '，已连接'}）`);
-  info(c(`    profile：${br.profile || prof.dir}`, 'dim'));
-  info(c(`    ${prof.why}`, 'dim'));
-  explainProfileSearch(prof);
+  const startUrl = url || platform.homeUrl || 'about:blank';   // 不给链接就开平台首页，别开空白页
+  const br = await ensureBrowserSmart(port, startUrl, CFG, opts);
+  if (br.launched) ok(`浏览器已启动（端口 ${port}）`);
   let tab = null;
   if (url) {
     tab = await resolveTab(port, url, {forceNew: flags.has('new')});
@@ -762,11 +773,22 @@ async function main() {
       tab = fresh.find(t => norm(t.url) === norm(url)) || fresh.find(t => t.url.includes(String(url).split('#')[1] || '\u0000')) || tab;
     }
   } else {
-    const tabs0 = await listTabs(port);
+    let tabs0 = await listTabs(port);
     tab = tabs0.find(t => platform.matchUrl && platform.matchUrl.test(t.url)) || null;
+    // 窗口里停在 about:blank / 新标签页时，主动导航到平台首页，别让人对着白屏
+    if (!tab && platform.homeUrl) {
+      const blank = tabs0.find(t => /^(about:blank|chrome:\/\/(newtab|new-tab-page)|edge:\/\/newtab)/i.test(t.url || ''));
+      if (blank) {
+        step('把空白标签导航到 ' + platform.name + ' 首页：' + platform.homeUrl);
+        const tmp = await CdpSession.attach(blank).catch(() => null);
+        if (tmp) { await tmp.navigate(platform.homeUrl).catch(() => {}); tmp.close(); await sleep(1500); }
+        tabs0 = await listTabs(port).catch(() => tabs0);
+      }
+    }
     if (!tab) {
       info('');
       step(`浏览器已打开 —— 请在窗口里进入 ${platform.name} 的答题页`);
+      if (platform.platformHint) info(c('    怎么进：' + platform.platformHint, 'dim'));
       info(c('    不用回来粘贴链接，我会自动发现那个页面（最多等 3 分钟）', 'dim'));
       for (let i = 0; i < 180; i++) {
         await sleep(1000);

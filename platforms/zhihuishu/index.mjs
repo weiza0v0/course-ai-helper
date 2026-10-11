@@ -11,7 +11,9 @@ export const id = 'zhihuishu';
 export const name = '智慧树';
 export const order = 3;   // 终端菜单里的序号
 export const mode = 'cdp';
-export const platformHint = '用「启动带调试浏览器.bat」打开的浏览器里登录，进入作业答题界面';
+// 不给链接时，让它先把浏览器开到这个页面（总比 about:blank 强）
+export const homeUrl = 'https://onlineweb.zhihuishu.com/onlinestuh5';
+export const platformHint = '在窗口里登录智慧树 → 我的课程 → 对应课程 → 作业/考试 → 做作业（看到题目和选项即可）';
 export const allowOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/[a-z0-9-]*\.?zhihuishu\.com$/;
 // 只读模式：不点击 / 不填答 / 不提交
 export const readOnly = true;
