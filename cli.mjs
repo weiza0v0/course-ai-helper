@@ -476,6 +476,13 @@ async function selftest() {
   t('桥接层：不含提交逻辑', !/submit|交卷/i.test(BS));
   const pageScript = preparePageScript('const B="__BACKEND__",T="__TOKEN__";', {backend: 'http://127.0.0.1:9', token: 'abc'});
   t('页面脚本：后端地址/token 占位符可注入', pageScript.includes('127.0.0.1:9') && pageScript.includes('"abc"'));
+  // ★ 回归防护：页面脚本里有 BACKEND.includes('__BACKEND__') 这种自检，
+  //   全局替换会把守卫也换掉 → 恒为真 → 脚本反而判定"没被注入"而放弃（真踩过）
+  const guardSample = "const BACKEND = '__BACKEND__';\nif (BACKEND.includes('__BACKEND__')) return 'not injected';";
+  const guardOut = preparePageScript(guardSample);
+  t('页面脚本注入：只换赋值、不动自检守卫',
+    guardOut.includes("const BACKEND = 'http://127.0.0.1:0'") && guardOut.includes("BACKEND.includes('__BACKEND__')"),
+    guardOut.split('\n')[1]);
 
   // 3. 答案单
   const demo = {name: 'T', questions: [
@@ -590,7 +597,7 @@ function makeLogStream(session) {
     let n = 0;
     for (const log of session.consoleLogs()) {
       if (n++ < seen) continue;
-      const text = cleanConsoleArgs(log.args && log.args.length ? log.args.map(v => ({value: v})) : [{value: log.text}]);
+      const text = cleanConsoleArgs(log.args && log.args.length ? log.args.map(v => ({value: v})) : [{value: log.text}]).replace(/^%c\s*/, '');
       if (!text) continue;
       if (/^(MOOC|超星|智慧树)?\s*(AI 答题助手|助手)/.test(text) && /版本|已启动/.test(text)) continue;
       const col = log.type === 'error' || log.type === 'warning' ? 'yellow' : 'dim';
