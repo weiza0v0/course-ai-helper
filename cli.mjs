@@ -526,8 +526,11 @@ async function selftest() {
   t('工具裁剪：整卷只定一次（纯文史 3 个 / 混合卷 6 个）',
     (() => {
       const pickToolsForPaper = await_import_paper;
-      const hist = [{stem: '沙盘推演有哪几个环节'}, {stem: '下列说法正确的有'}];
-      const mixed = [...hist, {stem: '求矩阵 A 的行列式 det(A)'}];
+      const hist = [
+        {stem: '沙盘推演实践教学有哪几个环节组成？（ ）。', options: [{text: '战役还原环节'}]},
+        {stem: '沙盘推演实践教学有助于培养学生的规则意识、协作精神。（ ）', options: [{text: '对'}]},
+      ];
+      const mixed = [...hist, {stem: '已知矩阵 A=[[1,2],[3,4]]，求 det(A)', options: [{text: '-2'}]}];
       return pickToolsForPaper(hist).length === 3 && pickToolsForPaper(mixed).length === 6;
     })());
 
