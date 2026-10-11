@@ -35,7 +35,7 @@ import {loadPlatforms} from './lib/platforms.mjs';
 import {listTabs, CdpSession} from './lib/cdp.mjs';
 import {solvePaper} from './lib/agent.mjs';
 import {renderAnswerSheet, renderAnswerSheetText, safeName} from './lib/report.mjs';
-import {bridgeSource, preparePageScript} from './lib/bridge.mjs';
+import {bridgeSource, preparePageScript, cleanConsoleArgs} from './lib/bridge.mjs';
 import {runTool, toolSpecs} from './lib/tools.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -583,6 +583,23 @@ function onEnter(fn) {
   return () => { process.stdin.off('keypress', h); try { process.stdin.setRawMode(false); } catch {} };
 }
 
+/** 把页面脚本（helper.js）自己的 console 输出搬到终端 —— 这就是"答题 log" */
+function makeLogStream(session) {
+  let seen = session.consoleLogs().length;
+  return () => {
+    let n = 0;
+    for (const log of session.consoleLogs()) {
+      if (n++ < seen) continue;
+      const text = cleanConsoleArgs(log.args && log.args.length ? log.args.map(v => ({value: v})) : [{value: log.text}]);
+      if (!text) continue;
+      if (/^(MOOC|超星|智慧树)?\s*(AI 答题助手|助手)/.test(text) && /版本|已启动/.test(text)) continue;
+      const col = log.type === 'error' || log.type === 'warning' ? 'yellow' : 'dim';
+      info(c('    [脚本] ' + text.slice(0, 160), col));
+    }
+    seen = session.consoleLogs().length;
+  };
+}
+
 const READY_PROBE = `(() => document.querySelectorAll('.examPaper_subject, .question-item, .nodeLab, .TiMu, .questionLi, .subject_node, [class*="question"]').length)()`;
 
 /**
@@ -603,6 +620,7 @@ async function acquireAnswerPage({platform, port, CFG}) {
   info('');
 
   const tryRead = async () => {
+    const drainLog = makeLogStream(session);      // 页面脚本说什么，都搬到终端
     // —— 用户按了回车，才真正动手读卷
     if (platform.mode === 'script') {
       await session.eval(bridgeSource({
@@ -616,16 +634,22 @@ async function acquireAnswerPage({platform, port, CFG}) {
       });
       step('页面脚本已注入，正在读题…');
       for (let i = 0; i < 50; i++) {
+        drainLog();
         const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
         if (raw) {
           const paper = JSON.parse(raw);
-          if (paper && paper.questions && paper.questions.length) return paper;
+          if (paper && paper.questions && paper.questions.length) { drainLog(); return paper; }
         }
         await sleep(400);
       }
+      drainLog();
+      // 页面脚本没交卷：把桥接层记到的错误也吐出来，方便定位
+      const errs = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.errors ? JSON.stringify(window.__BRIDGE__.errors) : null').catch(() => null);
+      if (errs && errs !== '[]') info(c('    [桥接层] ' + errs.slice(0, 200), 'dim'));
       return null;
     }
     const paper = await platform.readPaper(session).catch(() => null);
+    drainLog();
     return paper && paper.questions && paper.questions.length ? paper : null;
   };
 
@@ -644,7 +668,7 @@ async function acquireAnswerPage({platform, port, CFG}) {
 
       // 2) 只读探测：页面上有没有题目节点（不注入任何东西）
       if (session && !announced) {
-        probeN = await session.eval(READY_PROBE).catch(() => 0);
+        probeN = await session.eval(platform.readyProbe || READY_PROBE).catch(() => 0);
         if (probeN > 0) {
           announced = true;
           console.log();
@@ -664,8 +688,10 @@ async function acquireAnswerPage({platform, port, CFG}) {
           const paper = await tryRead();
           if (paper) { off(); return {session, tab, paper}; }
           console.log();
-          warn('这次没读到题目（页面可能还没加载完，或者题目在 iframe 里）');
-          info(c('    确认能看到题目和选项后，再按一次回车重试', 'dim'));
+          warn('这次没读到题目');
+          info(c('    · 页面上要**真的能看到题目和选项**（还停在课程目录/说明页的话，先点「开始测验」进去）', 'dim'));
+          info(c('    · 上面 [脚本] 那几行就是页面脚本的说明，通常能看出卡在哪', 'dim'));
+          info(c('    · 确认无误后，再按一次回车重试', 'dim'));
           announced = false;                  // 允许重新探测
           console.log();
         }
@@ -808,13 +834,16 @@ async function main() {
     const {answers} = await solve(paper, settings);
 
     step('把答案交回页面脚本，让它自己填…');
+    const drainFillLog = makeLogStream(session);
     await session.eval(`window.__BRIDGE__.answers = ${JSON.stringify(answers)}; window.__BRIDGE__.status = 'done';`);
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 90; i++) {
       await sleep(500);
+      drainFillLog();
       const st = await session.eval('window.__BRIDGE__.status').catch(() => null);
-      if (st === 'delivering') break;
+      if (st === 'delivering') { await sleep(1200); drainFillLog(); break; }
     }
     await sleep(1500);
+    drainFillLog();
     fillResult = {done: true};
   } else {
     // ---- CDP 只读：卷子已由 acquireAnswerPage 只读读出

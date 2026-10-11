@@ -10,6 +10,8 @@ export const order = 2;   // 终端菜单里的序号
 export const mode = 'script';
 // 不给链接时，让它先把浏览器开到这个页面（总比 about:blank 强）
 export const homeUrl = 'https://i.chaoxing.com/base';
+// readyProbe: 页面上出现这些元素才算进了答题界面（别写太宽，否则课程页也会被当成答题页）
+export const readyProbe = 'document.querySelectorAll(".examPaper_subject, .TiMu, .questionLi, .Zy_TItle, ul.Zy_ulTop").length';
 export const platformHint = '登录后进入课程 → 作业/考试 → 开始答题（要能看到题目和选项）';
 export const pageScript = 'console/helper.js';
 export const allowOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/[a-z0-9-]*(chaoxing|xuexitong|chaoxingc)\.(com|cn)$/;
