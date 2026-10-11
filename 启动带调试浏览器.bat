@@ -13,7 +13,9 @@ rem  It only reads the paper and writes an answer sheet for you.
 rem ============================================================
 
 set "PORT=9222"
-set "PROFILE=%~dp0chrome-profile"
+rem  The profile goes to the user folder, NOT into the repo
+rem  (it holds login cookies - never commit it)
+set "PROFILE=%USERPROFILE%\.course-ai-helper-profile"
 set "TARGET=https://passport.zhihuishu.com/login"
 
 set "CHROME="
@@ -46,12 +48,14 @@ echo.
 echo   Browser : %CHROME%
 echo   Port    : %PORT%
 echo   Profile : %PROFILE%
+  echo             - outside the repo on purpose, it holds login cookies
 echo.
 echo   1) Log in inside the new window
 echo   2) Open the homework page (so you can see the questions)
 echo   3) Go back to the helper web page and click "read now"
 echo.
-echo   NOTE: this mode is READ ONLY - nothing is clicked or submitted.
+echo   NOTE: READ ONLY in this mode - nothing is clicked, filled or submitted.
+  echo         For reading only (zhihuishu) you can also just use start.bat.
 echo.
 
 start "" "%CHROME%" --remote-debugging-port=%PORT% --user-data-dir="%PROFILE%" --no-first-run --no-default-browser-check "%TARGET%"
