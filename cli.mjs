@@ -849,7 +849,7 @@ async function doctor(platforms, CFG, opts) {
   info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort} · 并发 ${CFG.model.concurrency}`);
   info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）`);
   info(`    工具结果截断 ${CFG.model.max_tool_result_chars} 字符 · 网页类 ${CFG.model.web_result_chars} 字符 · 每题最多联网 ${CFG.model.max_web_calls} 次`);
-  info(`    工具集：${CFG.model.tool_mode === 'all' ? '全部 6 个（更贵）' : 'auto —— 按题目只发相关工具（文史题省约 2/3 固定开销）'}`);
+  info(`    工具集：${CFG.model.tool_mode === 'all' ? '全部 6 个（默认，省心）' : 'auto —— 按卷子裁掉用不到的数理工具（省 ~2600 tokens/请求，可能误判）'}`);
   if (CFG.model.price_in || CFG.model.price_out) info(`    单价：输入 ${CFG.model.price_in} / 输出 ${CFG.model.price_out} 元每百万 token（会估算花费）`);
   else warn('    没填 price_in / price_out → 只报 token 数，不估算金额');
 
