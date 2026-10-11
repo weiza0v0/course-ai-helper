@@ -35,7 +35,7 @@ import {loadConfig, saveCdpSetting} from './lib/config.mjs';
 import {loadPlatforms} from './lib/platforms.mjs';
 import {listTabs, CdpSession} from './lib/cdp.mjs';
 import {solvePaper} from './lib/agent.mjs';
-import {renderAnswerSheet, renderAnswerSheetText, safeName} from './lib/report.mjs';
+import {renderAnswerSheetText} from './lib/report.mjs';
 import {bridgeSource, preparePageScript, cleanConsoleArgs} from './lib/bridge.mjs';
 import {runTool, toolSpecs} from './lib/tools.mjs';
 
@@ -491,11 +491,11 @@ async function selftest() {
     {index: 2, qid: 'q2', typeName: '判断', stem: '题干二', options: [{letter: 'A', text: '错'}, {letter: 'B', text: '对'}]},
     {index: 3, qid: 'q3', typeName: '填空', stem: '题干三', options: []},
   ]};
-  const md = renderAnswerSheet(demo, {q1: 'AC', q2: 'B', q3: '文本'}, {siteName: 'X'});
+  const {renderAnswerSheet, safeName, renderAnswerSheetText} = await import('./lib/report.mjs');
+  const md = renderAnswerSheet(demo, {q1: 'AC', q2: 'B', q3: '文本'}, {siteName: 'X'});   // md 能力保留（终端不再写文件）
   t('答案单：速查表 + 多选勾选', /1\. AC/.test(md) && /- \[x\] \*\*A\.\*\*/.test(md) && /- \[ \] \*\*B\.\*\*/.test(md));
   t('答案单：填空与只读声明', md.includes('文本') && md.includes('自己点鼠标填'));
   t('答案单：文件名清洗', safeName('a/b:c*d?e"f<g>h|i') === 'a-b-c-d-e-f-g-h-i');
-  const {renderAnswerSheetText} = await import('./lib/report.mjs');
   const txt = renderAnswerSheetText(demo, {q1: 'AC', q2: 'B', q3: '文本'}, {color: false});
   t('终端答案单：勾选 + 选项原文 + 速查',
     txt.includes('✅') && txt.includes('A. 甲') && /→ 选 A C/.test(txt) && /速查：.*1\.AC/.test(txt));
@@ -858,17 +858,9 @@ async function main() {
     fillResult = {done: true};
   } else {
     // ---- CDP 只读：卷子已由 acquireAnswerPage 只读读出
-    step('只读出答案单模式（不执行页面脚本、不在页面上点击）');
+    step('只读模式（不执行页面脚本、不在页面上点击）');
     const {answers} = await solve(paper, settings);
-    const md = renderAnswerSheet(paper, answers, {
-      siteName: platform.name, model: settings.model, url: paper.tid || '',
-      solvedAt: new Date().toLocaleString('zh-CN'),
-    });
-    const dataDir = path.join(__dirname, 'data');
-    fs.mkdirSync(dataDir, {recursive: true});
-    const file = path.join(dataDir, `${safeName(paper.name || paper.title || 'answer')}-答案单-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
-    fs.writeFileSync(file, md, 'utf8');
-    ok('答案单已保存：' + path.relative(__dirname, file));
+    // 不导文件，解完一次性把答案打在终端里
     console.log(renderAnswerSheetText(paper, answers));
   }
 
