@@ -538,7 +538,30 @@ async function selftest() {
   // ★ 借鉴 @deepseek-ai/dsh-tool-web（MIT）的多查询设计：一次调用收 1~4 条查询并发执行、
   //   轮询合并、按 URL 去重。目的不是"搜得更多"，而是**少几轮往返** ——
   //   模型每多调一次工具，就要把整段对话重发一次，轮次才是真正的成本来源。
-  const {mergeSearchLists, queryBudgetCost, normalizeQueries, trimLeadingNav} = await import('./lib/tools.mjs');
+  const {mergeSearchLists, normalizeQueries, trimLeadingNav,
+          splitPassages, selectRelevant} = await import('./lib/tools.mjs');
+  // ★ 截断从"按位置砍前 N 字符"改成"按相关性挑句子"。
+  //   实测 360百科：不给 focus 时「考文垂」在 1200 窗口外、看不到；给了 focus 就精准挑到
+  //   「12战斗机群，伯明翰，考文垂，伊普斯维奇…利物浦…」那句。
+  {
+    const filler = '这段是无关的铺垫内容，用来把真正相关的句子推到很后面去。';
+    const body = Array.from({length: 40}, () => filler).join('\n') + '\n12战斗机群负责伯明翰、考文垂、利物浦及其周边地区。';
+    t('相关性挑选：把埋在最后的答案句捞进窗口',
+      selectRelevant(body, '考文垂 伯明翰 利物浦', 300)?.text.includes('考文垂') === true);
+    t('相关性挑选：一个词都没命中 → 返回 null（退回头部截断）',
+      selectRelevant(body, '量子纠缠 波函数坍缩', 300) === null);
+    t('相关性挑选：不给 focus → 返回 null', selectRelevant(body, '', 300) === null);
+    t('相关性挑选：遵守字符预算',
+      (selectRelevant(body, '无关 铺垫', 200)?.text.length || 0) <= 220);
+    // 命中分散在多句时：必须按**原文顺序**还原，并用「……」标出跳跃（否则读起来是断裂的）
+    const multi = '关键甲在这里。中间这句无关。关键甲又出现在这里。';
+    const picked = selectRelevant(multi, '关键甲', 200);
+    t('切割与还原：多命中按原文顺序还原、跳跃处留标记',
+      picked?.text === '关键甲在这里。\n……\n关键甲又出现在这里。', JSON.stringify(picked?.text));
+    t('切割：单字词被过滤（≥2 字才算术语）', selectRelevant(multi, '甲', 200) === null);
+    t('切割：中文句末标点会被切开', splitPassages('甲。乙！丙？').length === 3);
+    t('切割：空行不产生空段', splitPassages('甲\n\n\n乙').length === 2);
+  }
   // ★ Node 抓不到"正文容器"（没 DOM），用"导航是短词、正文是长句"近似跳过导航。
   //   实测 360百科前 600 字全是「网页/资讯/AI问答/视频/登录/注册…」，把截断窗口吃光。
   {
@@ -549,15 +572,15 @@ async function selftest() {
     t('跳过导航：全页都是短条目（目录型）不误伤',
       trimLeadingNav(nav) === nav);
   }
-  // ★ 预算必须按"查询条数"算：一次 web_search 最多带 4 条查询，
-  //   若按调用次数算，max_web_calls=3 实际会放行 12 条查询，预算形同虚设（实测踩到）。
-  t('联网预算：按查询条数计费，不按调用次数',
-    queryBudgetCost({queries: ['a', 'b', 'c', 'd']}) === 4
-    && queryBudgetCost({query: 'a'}) === 1
-    && queryBudgetCost({queries: ['a', 'a', 'b']}) === 2
-    && queryBudgetCost({}) === 1);
-  t('联网预算：最多 4 条查询（超出截断）',
+  // ★ 联网预算按**调用次数**算，不按查询条数 —— 这一点是量出来的：
+  //   一次 4 条查询的结果被 max_results 合并限长，进上下文的量和 1 条查询几乎一样，
+  //   真正花钱的是轮次。按条数计费会把搜索预算砍到 1/3，模型只好空转（实测 123 秒）。
+  t('联网预算：一次调用最多带 4 条查询',
     normalizeQueries({queries: ['a', 'b', 'c', 'd', 'e', 'f']}).length === 4);
+  t('联网预算：查询去重（同样的词不用搜两遍）',
+    normalizeQueries({queries: ['a', 'a', 'b']}).length === 2);
+  t('联网预算：query 与 queries 两种写法都吃',
+    normalizeQueries({query: 'a'}).length === 1 && normalizeQueries({queries: ['b']}).length === 1);
   {
     const A = [{title: 'a1', url: 'https://x.com/1'}, {title: 'a2', url: 'https://x.com/2'}, {title: 'a3', url: 'https://x.com/3'}];
     const B = [{title: 'b1', url: 'https://y.com/9'}, {title: 'a1dup', url: 'https://x.com/1/'}, {title: 'b2', url: 'https://y.com/2'}];
@@ -771,7 +794,7 @@ async function solve(paper, settings) {
     } else {
       cost = c(' · （想估算金额就在 config.toml 填 price_in / price_out）', 'dim');
     }
-    info(c(`    💰 用量：输入 ${k(usage.prompt)}（缓存命中 ${k(hit)} · ${rate}%）· 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求，联网 ${usage.web || 0} 次）`, 'dim') + cost);
+    info(c(`    💰 用量：输入 ${k(usage.prompt)}（缓存命中 ${k(hit)} · ${rate}%）· 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求，搜索 ${usage.web || 0} 条查询 / 抓网页 ${usage.fetches || 0} 次）`, 'dim') + cost);
   }
   return {answers, results, ms, usage};
 }
@@ -978,7 +1001,7 @@ async function doctor(platforms, CFG, opts) {
   info('模型与成本：');
   info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort} · 并发 ${CFG.model.concurrency}`);
   info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）`);
-  info(`    工具结果截断 ${CFG.model.max_tool_result_chars} 字符 · 网页类 ${CFG.model.web_result_chars} 字符 · 每题最多联网 ${CFG.model.max_web_calls} 次`);
+  info(`    工具结果截断 ${CFG.model.max_tool_result_chars} 字符 · 网页类 ${CFG.model.web_result_chars} 字符 · 每题搜索 ${CFG.model.max_web_calls} 条查询 / 抓网页 ${CFG.model.max_web_fetches} 次`);
   info(`    工具集：${CFG.model.tool_mode === 'all' ? '全部 6 个（默认，省心）' : 'auto —— 按卷子裁掉用不到的数理工具（省 ~2600 tokens/请求，可能误判）'}`);
   if (CFG.model.price_in || CFG.model.price_out) info(`    单价：输入 ${CFG.model.price_in} / 输出 ${CFG.model.price_out} 元每百万 token（会估算花费）`);
   else warn('    没填 price_in / price_out → 只报 token 数，不估算金额');
@@ -1008,6 +1031,7 @@ async function main() {
     toolMode: CFG.model.tool_mode,
     maxToolResultChars: CFG.model.max_tool_result_chars,
     maxWebCalls: CFG.model.max_web_calls,
+    maxWebFetches: CFG.model.max_web_fetches,
     webResultChars: CFG.model.web_result_chars,
     useTools: CFG.model.use_tools,
     reasoningEffort: CFG.model.reasoning_effort, timeoutSeconds: CFG.model.timeout_seconds,
