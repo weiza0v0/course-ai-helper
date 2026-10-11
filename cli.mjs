@@ -33,11 +33,11 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {loadConfig, saveCdpSetting} from './lib/config.mjs';
 import {loadPlatforms} from './lib/platforms.mjs';
-import {listTabs, CdpSession} from './lib/cdp.mjs';
+import {listTabs, CdpSession, browserFetch} from './lib/cdp.mjs';
 import {solvePaper} from './lib/agent.mjs';
 import {renderAnswerSheetText} from './lib/report.mjs';
 import {bridgeSource, preparePageScript, cleanConsoleArgs} from './lib/bridge.mjs';
-import {runTool, toolSpecs} from './lib/tools.mjs';
+import {runTool, toolSpecs, setBrowserFetcher} from './lib/tools.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -556,6 +556,22 @@ async function selftest() {
     looksBlocked(403, '百度安全验证', '百度安全验证') === true);
   t('抓取拦截识别：正常长正文不误判',
     looksBlocked(200, '文心雕龙 - 维基百科', '《文心雕龙》是南朝刘勰创作的文学理论著作，'.repeat(20)) === false);
+  // ★ 浏览器兜底：直连被反爬挡住/连不上时，改用真实 Chrome 开后台标签抓。
+  //   用 127.0.0.1:9（连接必然被拒）做离线触发点，不依赖网络、不真开浏览器。
+  const {webFetch, setBrowserFetcher, hasBrowserFetcher} = await import('./lib/tools.mjs');
+  const noNet = 'http://127.0.0.1:9/';
+  t('抓取兜底：没接浏览器时照常报错', (await webFetch({url: noNet})).includes('抓取失败'));
+  t('抓取兜底：未注入时 hasBrowserFetcher 为 false', hasBrowserFetcher() === false);
+  setBrowserFetcher(async () => ({title: '兜底页', text: '甲'.repeat(300), url: 'https://example.com/x'}));
+  t('抓取兜底：注入后 hasBrowserFetcher 为 true', hasBrowserFetcher() === true);
+  const viaFake = await webFetch({url: noNet});
+  t('抓取兜底：直连失败 → 走浏览器抓取并标注来源',
+    viaFake.includes('浏览器抓取') && viaFake.includes('甲甲'), viaFake.slice(0, 60));
+  // 兜底抓回来还是验证页 → 必须放弃，不能把验证页当正文
+  setBrowserFetcher(async () => ({title: '百度安全验证', text: '百度安全验证', url: noNet}));
+  t('抓取兜底：抓回来仍是验证页 → 不当正文', (await webFetch({url: noNet})).includes('抓取失败'));
+  setBrowserFetcher(null);
+  t('抓取兜底：可以摘掉（不用浏览器时零影响）', hasBrowserFetcher() === false);
 
   t('工具裁剪：文史题只发 calc+联网，数学题发全部',
     (() => {
@@ -947,6 +963,12 @@ async function main() {
   }
   if (flags.has('selftest')) return selftest();
   if (flags.has('doctor')) return doctor(platforms, CFG, opts);
+
+  // ★ 联网工具的反爬兜底：web_fetch 直连被 403 挡住时（百度百科/知到答案页都是这样），
+  //   用同一个浏览器开一个**后台标签**抓正文，读完就关 ——
+  //   全程只新建/关闭临时标签，绝不导航或改动用户正在做题的那个页面。
+  //   （放在这里而不是更早：--list/--selftest/--doctor 必须完全不碰浏览器。）
+  setBrowserFetcher(url => browserFetch(url, {port}));
 
   if (!settings.apiKey) { bad('config.toml 里没填 api_key'); process.exit(2); }
 
