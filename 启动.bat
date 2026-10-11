@@ -39,19 +39,17 @@ if "%PLAT%"=="" set "PLAT=1"
 
 echo.
 set "URL="
-set /p URL=  Paste the quiz page URL: 
-if "%URL%"=="" (
-  echo.
-  echo   No URL given - listing the tabs already open in your browser...
-  echo   Open the quiz page first, then run this again.
-  echo.
-  "%NODEEXE%" cli.mjs --list
-  echo.
-  pause
-  exit /b 0
-)
+echo   Paste the quiz page URL - OR just press Enter.
+echo   If you press Enter, a browser window opens and YOU click into the
+echo   quiz page there; the helper finds it by itself. No copy-paste needed.
+echo.
+set /p URL=  Quiz page URL (Enter = let me open the browser for you): 
 
 echo.
-"%NODEEXE%" cli.mjs %PLAT% "%URL%"
+if "%URL%"=="" (
+  "%NODEEXE%" cli.mjs %PLAT%
+) else (
+  "%NODEEXE%" cli.mjs %PLAT% "%URL%"
+)
 echo.
 pause

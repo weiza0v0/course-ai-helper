@@ -2,7 +2,7 @@
 /**
  * 在线课程 AI 答题助手 —— 终端版
  *
- *   node cli.mjs <平台> <网页链接>
+ *   node cli.mjs <平台> [网页链接]        ← 链接可省略：省略时把浏览器开好，你在里面点进答题页即可
  *   平台可以写序号：1 = 中国大学MOOC / 2 = 超星学习通 / 3 = 智慧树
  *
  * 例：
@@ -728,6 +728,17 @@ async function main() {
     warn(`这个链接看起来不像 ${platform.name} 的页面 —— 仍按 ${platform.name} 处理`);
   }
 
+  // ---- 没给链接也没给平台：看已有的标签里有没有能认出来的
+  if (!platform && !url) {
+    bad('要告诉我用哪个平台（或者给我一个答题页链接）');
+    info('  平台可选（序号、id 或中文名都行）：');
+    console.log(platformMenu(platforms));
+    info('');
+    info(c('  小技巧：链接是可选的 —— 不给链接的话，工具会把浏览器开好，', 'dim'));
+    info(c('          你在窗口里点进答题页，它会自动认出那个页面', 'dim'));
+    process.exit(2);
+  }
+
   // ---- 浏览器：没开就拉起来（尽量借用你日常的登录态）
   const exe = await resolveBrowserExe(CFG, opts);
   const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '', exe);
@@ -751,12 +762,29 @@ async function main() {
       tab = fresh.find(t => norm(t.url) === norm(url)) || fresh.find(t => t.url.includes(String(url).split('#')[1] || '\u0000')) || tab;
     }
   } else {
-    const tabs = await listTabs(port);
-    tab = tabs.find(t => platform.matchUrl && platform.matchUrl.test(t.url)) || null;
+    const tabs0 = await listTabs(port);
+    tab = tabs0.find(t => platform.matchUrl && platform.matchUrl.test(t.url)) || null;
     if (!tab) {
-      bad(`没有给定链接，也没找到 ${platform.name} 的页面`);
-      info('  用法：node cli.mjs <平台> <网页链接>');
-      process.exit(2);
+      info('');
+      step(`浏览器已打开 —— 请在窗口里进入 ${platform.name} 的答题页`);
+      info(c('    不用回来粘贴链接，我会自动发现那个页面（最多等 3 分钟）', 'dim'));
+      for (let i = 0; i < 180; i++) {
+        await sleep(1000);
+        const tabs = await listTabs(port).catch(() => []);
+        tab = tabs.find(t => platform.matchUrl && platform.matchUrl.test(t.url));
+        if (tab) break;
+        if (i % 15 === 14) info(c(`    还在等…（已等 ${i + 1} 秒）当前 ${tabs.length} 个标签`, 'dim'));
+      }
+      if (!tab) {
+        bad('等了 3 分钟也没看到匹配的答题页');
+        info('  看看浏览器里现在开着什么：');
+        const tabs = await listTabs(port).catch(() => []);
+        for (const t of tabs) info(c(`    · ${(t.title || '').slice(0, 24)} ${t.url.slice(0, 70)}`, 'dim'));
+        info('');
+        info('  也可以直接把链接给我：node cli.mjs ' + platform.id + ' "<答题页链接>"');
+        process.exit(3);
+      }
+      ok('自动发现答题页：' + (tab.title || '').slice(0, 40));
     }
   }
   ok(`平台：${platform.name}（${platform.mode === 'cdp' ? 'CDP 只读' : '页面脚本'}模式）`);

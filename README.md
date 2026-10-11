@@ -57,9 +57,15 @@ cd course-ai-helper
 cp config.example.toml config.toml      # 填上你的 api_key
 
 node cli.mjs mooc "https://www.icourse163.org/spoc/learn/XJTU-1486472169?tid=...#/learn/quiz?id=..."
+# 链接也可以不给：
+node cli.mjs mooc
 ```
 
-就这两个输入：**平台** 和 **网页链接**。
+**链接是可选的**：
+
+- 给了链接 → 它打开/复用那个页面；
+- **不给链接 → 它把浏览器开好，你在窗口里点进答题页，它自己认出那个页面**（最多等 3 分钟）。
+  所以不需要"先开 Chrome 抄下链接再关掉"这种事。
 
 ```
 $ node cli.mjs chaoxing "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?..."
