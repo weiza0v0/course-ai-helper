@@ -34,7 +34,7 @@ import {loadConfig, saveCdpSetting} from './lib/config.mjs';
 import {loadPlatforms} from './lib/platforms.mjs';
 import {listTabs, CdpSession} from './lib/cdp.mjs';
 import {solvePaper} from './lib/agent.mjs';
-import {renderAnswerSheet, safeName} from './lib/report.mjs';
+import {renderAnswerSheet, renderAnswerSheetText, safeName} from './lib/report.mjs';
 import {bridgeSource, preparePageScript} from './lib/bridge.mjs';
 import {runTool, toolSpecs} from './lib/tools.mjs';
 
@@ -487,6 +487,11 @@ async function selftest() {
   t('答案单：速查表 + 多选勾选', /1\. AC/.test(md) && /- \[x\] \*\*A\.\*\*/.test(md) && /- \[ \] \*\*B\.\*\*/.test(md));
   t('答案单：填空与只读声明', md.includes('文本') && md.includes('自己点鼠标填'));
   t('答案单：文件名清洗', safeName('a/b:c*d?e"f<g>h|i') === 'a-b-c-d-e-f-g-h-i');
+  const {renderAnswerSheetText} = await import('./lib/report.mjs');
+  const txt = renderAnswerSheetText(demo, {q1: 'AC', q2: 'B', q3: '文本'}, {color: false});
+  t('终端答案单：勾选 + 选项原文 + 速查',
+    txt.includes('✅') && txt.includes('A. 甲') && /→ 选 A C/.test(txt) && /速查：.*1\.AC/.test(txt));
+  t('终端答案单：判断题给的是选项文字', txt.includes('B. 对'));
 
   // 4. 配置
   const {config, note} = loadConfig(__dirname, '');
@@ -586,69 +591,80 @@ const READY_PROBE = `(() => document.querySelectorAll('.examPaper_subject, .ques
  *   · 页面一旦有题目节点就注入页面脚本开始读题
  *   · **随时按 Enter 立即重测**
  */
-async function acquireAnswerPage({platform, port, CFG, timeoutSec = 300}) {
-  let force = false;
-  const off = onEnter(() => { force = true; });
-  let session = null, tab = null, injected = false, elapsed = 0, tick = 0;
+async function acquireAnswerPage({platform, port, CFG, timeoutSec = 900}) {
+  let force = false, go = false, readyPaper = null;
+  const off = onEnter(() => { if (readyPaper) go = true; else force = true; });
 
-  step(`等待 ${platform.name} 的答题页（进去后自动识别；随时按 ${c('Enter', 'bold')} 立即重测）`);
+  let session = null, tab = null, injected = false, elapsed = 0, tick = 0, lastRemind = 0;
+  const tty = !!process.stdin.isTTY;
+
+  step(`等你在浏览器里进入 ${platform.name} 的答题页`);
   if (platform.platformHint) info(c('    怎么进：' + platform.platformHint, 'dim'));
-  info(c('    链接可以不给 —— 你在浏览器里点进去就行', 'dim'));
+  info(c('    我会自动识别；进去了就按 ' + (tty ? '回车' : '（非交互，识别到就直接开始）') + ' 开始解题', 'dim'));
   info('');
 
   try {
-    while (elapsed < timeoutSec) {
+    while (true) {
+      if (go && readyPaper) { off(); return {session, tab, paper: readyPaper}; }
       const woke = force; force = false;
-      if (woke) info(c('    （手动重测）', 'dim'));
+      if (woke && !readyPaper) info(c('    （立即重测）', 'dim'));
       tick++;
 
-      // 1) 找一个匹配的答题页标签（换了就重新附加）
-      const tabs = await listTabs(port).catch(() => []);
-      const hit = tabs.find(t => platform.matchUrl.test(t.url));
-      if (hit && (!tab || hit.url !== tab.url)) {
-        if (session) { try { session.close(); } catch {} }
-        tab = hit;
-        session = await CdpSession.attach(tab);
-        injected = false;
-        ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
-      }
-
-      if (session) {
-        if (platform.mode === 'script') {
-          const n = await session.eval(READY_PROBE).catch(() => 0);
-          if (!injected && n > 0) {
-            await session.eval(bridgeSource({
-              pollSeconds: CFG.app.poll_seconds,
-              fillIntervalMs: CFG.app.fill_interval_ms,
-              limitBackoffMs: CFG.app.limit_backoff_ms,
-            })).catch(() => {});
-            const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
-            await session.eval(preparePageScript(fs.readFileSync(helperPath, 'utf8'))).catch(e => {
-              info(c('    (脚本返回：' + String(e.message).slice(0, 60) + ')', 'dim'));
-            });
-            injected = true;
-            step('页面脚本已注入，正在读题…');
-          }
-          const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
-          if (raw) {
-            const paper = JSON.parse(raw);
-            if (paper && paper.questions && paper.questions.length) { off(); return {session, tab, paper}; }
-          }
-        } else if (tick % 2 === 1 || woke) {
-          // 只读模式不必每秒都拉一次完整 DOM
-          const paper = await platform.readPaper(session).catch(() => null);
-          if (paper && paper.questions && paper.questions.length) { off(); return {session, tab, paper}; }
+      // 还没就绪：扫标签 / 附加 / 注入 / 读题
+      if (!readyPaper) {
+        const tabs = await listTabs(port).catch(() => []);
+        const hit = tabs.find(t => platform.matchUrl.test(t.url));
+        if (hit && (!tab || hit.url !== tab.url)) {
+          if (session) { try { session.close(); } catch {} }
+          tab = hit; session = await CdpSession.attach(tab); injected = false;
+          ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
         }
-      }
-
-      if (!woke && elapsed && elapsed % 20 === 0) {
-        const t2 = await listTabs(port).catch(() => []);
-        const near = t2.filter(t => platform.siteUrl ? platform.siteUrl.test(t.url) : false).length;
-        info(c(`    还在等…（${elapsed}s / ${timeoutSec}s，${t2.length} 个标签${near ? `，其中 ${near} 个是 ${platform.name} 的页面但还不是答题页` : ''}）`, 'dim'));
+        if (session) {
+          if (platform.mode === 'script') {
+            const n = await session.eval(READY_PROBE).catch(() => 0);
+            if (!injected && n > 0) {
+              await session.eval(bridgeSource({
+                pollSeconds: CFG.app.poll_seconds,
+                fillIntervalMs: CFG.app.fill_interval_ms,
+                limitBackoffMs: CFG.app.limit_backoff_ms,
+              })).catch(() => {});
+              const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
+              await session.eval(preparePageScript(fs.readFileSync(helperPath, 'utf8'))).catch(e => {
+                info(c('    (脚本返回：' + String(e.message).slice(0, 60) + ')', 'dim'));
+              });
+              injected = true;
+              step('页面脚本已注入，正在读题…');
+            }
+            const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
+            if (raw) {
+              const paper = JSON.parse(raw);
+              if (paper && paper.questions && paper.questions.length) readyPaper = paper;
+            }
+          } else if (tick % 2 === 1 || woke) {
+            const paper = await platform.readPaper(session).catch(() => null);
+            if (paper && paper.questions && paper.questions.length) readyPaper = paper;
+          }
+        }
+        if (readyPaper) {
+          console.log();
+          ok(c(`已就绪：${readyPaper.questions.length} 道题${readyPaper.name || readyPaper.title ? '（' + String(readyPaper.name || readyPaper.title).slice(0, 34) + '）' : ''}`, 'green'));
+          info(c('    核对一下浏览器里的页面没问题后，按 ', 'dim') + c('回车', 'bold') + c(' 开始解题（或按 Ctrl+C 退出）', 'dim'));
+          console.log();
+          if (!tty) { off(); return {session, tab, paper: readyPaper}; }   // 非交互：直接开跑
+          lastRemind = Date.now();
+        } else if (!woke && elapsed && elapsed % 20 === 0) {
+          const t2 = await listTabs(port).catch(() => []);
+          const near = t2.filter(t => platform.siteUrl && platform.siteUrl.test(t.url)).length;
+          info(c(`    还在等你进答题页…（${elapsed}s，${t2.length} 个标签${near ? `，其中 ${near} 个是 ${platform.name} 的页面但还不是答题页` : ''}）`, 'dim'));
+        }
+      } else if (tty && Date.now() - lastRemind > 60000) {
+        info(c('    仍在等你按回车（Ctrl+C 退出）', 'dim'));
+        lastRemind = Date.now();
       }
 
       if (woke) await sleep(30);
-      else { await sleep(1000); elapsed++; }
+      else { await sleep(readyPaper ? 400 : 1000); elapsed++; }
+      if (!readyPaper && elapsed > timeoutSec) break;
     }
   } finally { off(); }
   return {session, tab, paper: null};
@@ -795,7 +811,7 @@ async function main() {
     const file = path.join(dataDir, `${safeName(paper.name || paper.title || 'answer')}-答案单-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
     fs.writeFileSync(file, md, 'utf8');
     ok('答案单已保存：' + path.relative(__dirname, file));
-    info(c(md.split('## 逐题')[0].split('## 速查')[1]?.replace(/```/g, '').trim() || '', 'green'));
+    console.log(renderAnswerSheetText(paper, answers));
   }
 
   line();
