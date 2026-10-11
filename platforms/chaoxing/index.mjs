@@ -6,6 +6,7 @@
  */
 export const id = 'chaoxing';
 export const name = '超星学习通';
+export const order = 2;   // 终端菜单里的序号
 export const mode = 'script';
 export const platformHint = '打开超星作业/考试页，进入能看到题目和选项的答题界面（题目多在 iframe 里）';
 export const pageScript = 'console/helper.js';

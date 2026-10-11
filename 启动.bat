@@ -1,7 +1,13 @@
 @echo off
 chcp 65001 >nul
-title AI 答题助手（终端版）
+title Online Course AI Helper (Terminal)
 cd /d "%~dp0"
+
+rem ============================================================
+rem  NOTE: keep this file PURE ASCII.
+rem  cmd.exe reads .bat in the OEM codepage (GBK on CN Windows),
+rem  so UTF-8 Chinese here would be shredded into garbage commands.
+rem ============================================================
 
 set "NODEEXE="
 if exist "runtime\node.exe" set "NODEEXE=runtime\node.exe"
@@ -11,33 +17,41 @@ if not defined NODEEXE (
 )
 if not defined NODEEXE (
   echo.
-  echo   [ERROR] Node.js not found. Install Node 18+ from https://nodejs.org/
+  echo   [ERROR] Node.js not found.
+  echo   Install Node 18+ from https://nodejs.org/
   echo   Or put a portable node.exe into the "runtime" folder
-  echo   (run:  node scripts\fetch-node.mjs  on another machine).
+  echo   - run  node scripts\fetch-node.mjs  on a machine with internet.
   echo.
   pause
   exit /b 1
 )
 
 echo.
-echo   在线课程 AI 答题助手 - 终端版
-echo   ------------------------------------------------
-echo   平台: mooc = 中国大学MOOC / chaoxing = 超星 / zhihuishu = 智慧树
+echo   Online Course AI Helper - Terminal
+echo   --------------------------------------------------------
+echo   [1] China University MOOC    icourse163.org
+echo   [2] Chaoxing / Xuexitong     chaoxing.com
+echo   [3] Zhihuishu                zhihuishu.com
 echo.
 set "PLAT="
-set /p PLAT=  平台 [mooc/chaoxing/zhihuishu]: 
-if "%PLAT%"=="" set "PLAT=mooc"
+set /p PLAT=  Choose platform [1-3, Enter = 1]: 
+if "%PLAT%"=="" set "PLAT=1"
+
 echo.
 set "URL="
-set /p URL=  网页链接（答题页地址）: 
+set /p URL=  Paste the quiz page URL: 
 if "%URL%"=="" (
-  echo   没有输入链接，改为列出浏览器里已打开的标签...
-  "%NODEEXE%" cli.mjs %PLAT% --list
+  echo.
+  echo   No URL given - listing the tabs already open in your browser...
+  echo   Open the quiz page first, then run this again.
+  echo.
+  "%NODEEXE%" cli.mjs --list
   echo.
   pause
   exit /b 0
 )
 
+echo.
 "%NODEEXE%" cli.mjs %PLAT% "%URL%"
 echo.
 pause

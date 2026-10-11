@@ -20,3 +20,7 @@ dist/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 带调试端口的浏览器 profile（含 cookie，绝不能进仓库）
+chrome-profile/
+*-profile/

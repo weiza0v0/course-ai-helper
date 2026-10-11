@@ -5,6 +5,7 @@
  */
 export const id = 'mooc';
 export const name = '中国大学MOOC';
+export const order = 1;   // 终端菜单里的序号
 export const mode = 'script';                 // script = 控制台脚本填答；cdp = 只读出答案单
 export const platformHint = '打开 MOOC 测验页，先点「开始测验」进入答题界面';
 export const pageScript = 'console/helper.js';  // 页面脚本：由终端用 CDP 注入，不需要手动粘贴

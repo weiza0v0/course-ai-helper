@@ -3,6 +3,7 @@
  * 在线课程 AI 答题助手 —— 终端版
  *
  *   node cli.mjs <平台> <网页链接>
+ *   平台可以写序号：1 = 中国大学MOOC / 2 = 超星学习通 / 3 = 智慧树
  *
  * 例：
  *   node cli.mjs mooc      "https://www.icourse163.org/spoc/learn/XJTU-1486472169?tid=...#/learn/quiz?id=..."
@@ -67,14 +68,23 @@ function parseArgs(argv) {
   return out;
 }
 
-/** 平台名容错：id / 中文名 / 大小写 */
+/** 平台名容错：序号(1/2/3) / id / 中文名 / 大小写 */
 function matchPlatform(platforms, name) {
   if (!name) return null;
   const n = String(name).trim().toLowerCase();
+  if (/^\d+$/.test(n)) {
+    const byOrder = platforms.find(p => String(p.order) === n) || platforms[Number(n) - 1];
+    return byOrder || null;
+  }
   return platforms.find(p => p.id.toLowerCase() === n)
       || platforms.find(p => (p.name || '').toLowerCase().includes(n))
       || platforms.find(p => n.includes(p.id.toLowerCase()))
       || null;
+}
+
+/** 平台菜单（终端与用法提示共用） */
+function platformMenu(platforms) {
+  return platforms.map((p, i) => `    ${p.order || i + 1}. ${p.name.padEnd(12)} ${p.id}${p.mode === 'cdp' ? '   (CDP 只读 → 答案单)' : ''}`).join('\n');
 }
 
 /** 浏览器调试端口连不上就用它拉一个 Chrome/Edge（带 --remote-debugging-port） */
@@ -315,7 +325,8 @@ async function main() {
   if (!platform) {
     bad('没有指定平台（或认不出来）');
     info('  用法：node cli.mjs <平台> <网页链接>');
-    info('  平台：' + platforms.map(p => `${p.id}（${p.name}）`).join('  '));
+    info('  平台可选（序号、id 或中文名都行）：');
+    console.log(platformMenu(platforms));
     process.exit(2);
   }
   if (platform.matchUrl && url && !platform.matchUrl.test(url)) {

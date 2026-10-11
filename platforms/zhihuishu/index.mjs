@@ -9,6 +9,7 @@
  */
 export const id = 'zhihuishu';
 export const name = '智慧树';
+export const order = 3;   // 终端菜单里的序号
 export const mode = 'cdp';
 export const platformHint = '用「启动带调试浏览器.bat」打开的浏览器里登录，进入作业答题界面';
 export const allowOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/[a-z0-9-]*\.?zhihuishu\.com$/;
