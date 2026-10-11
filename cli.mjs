@@ -657,7 +657,20 @@ async function selftest() {
   // ★ 思考强度分档：文史 low / 数理 max。
   //   理由是实测出来的：输出 token 占实际花费约 78%（输出 8 元/百万 vs 缓存输入 0.04 元/百万），
   //   而思考 token 全部按输出价计费。
-  const {classifyQuestion, effortForQuestion, looksMathy, parseLabels} = await import('./lib/agent.mjs');
+  const {classifyQuestion, effortForQuestion, looksMathy, parseLabels, assistantMessageFor} = await import('./lib/agent.mjs');
+  // ★ reasoning_content 回传：官方要求带 tools 的请求必须回传历史思考内容，
+  //   否则模型看不到自己上一轮怎么想的、只能重新推。实测每轮输出 token -17%、整题成本 -27%。
+  //   但**只在模型确实返回过时才带** —— 本项目支持任何 OpenAI 兼容接口，
+  //   换个不返回思考的模型时不能凭空塞一个它可能不认识的字段。
+  {
+    const withR = assistantMessageFor({content: 'a', reasoning_content: 'r', tool_calls: [{id: '1'}]});
+    const noR = assistantMessageFor({content: 'a'});
+    t('回传思考：模型给过 reasoning_content 就带上（和 tool_calls 并存）',
+      withR.reasoning_content === 'r' && Array.isArray(withR.tool_calls) && withR.role === 'assistant');
+    t('回传思考：模型没给过就绝不带这个字段（兼容别的 OpenAI 接口）',
+      !('reasoning_content' in noR) && !('tool_calls' in noR) && noR.content === 'a');
+    t('回传思考：思考内容一律转成字符串', typeof assistantMessageFor({content: '', reasoning_content: 123}).reasoning_content === 'string');
+  }
   // ★ 兜底正则必须先抹掉年份：实测「五四运动爆发于（　）1919年…」这类题
   //   用裸 \d 当数理信号会 4/4 全判错，于是一路按 max 思考强度烧钱。
   t('兜底判定：带年份的文史题不再误判成数理（抹掉 年/年代/世纪/第X次）',

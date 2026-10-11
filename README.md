@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-106%20math%20%2B%2085%20app-success.svg)](#测试)
+[![Tests](https://img.shields.io/badge/tests-106%20math%20%2B%2093%20app-success.svg)](#测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **永不自动交卷** —— 代码里没有任何提交动作。
@@ -64,10 +64,14 @@ grep -rn "submitBtn\.click\|btn\.click()" platforms/ lib/ cli.mjs   # 无输出
 - 分完类再定强度：**文史题 `low`、数理题 `max`**（不确定的按数理，宁可多花也别算错）。
 - 关键词兜底（模型分类不可用时）：**先抹掉"年份/年代/世纪"再判** ——
   老版本拿裸 `\d` 当数理信号，实测带年份的文史题 **4 道全判错**，而近代史/毛概满篇是年份。
+- **回传 `reasoning_content`**：官方要求带 `tools` 的请求必须回传历史思考内容，不回传模型就看不到
+  自己上一轮怎么想的、只能重新推一遍。实测（热身 + 交替顺序各 2 次）**每轮输出 token -17%、
+  整题成本 -27%**；而它进上下文后走缓存命中价（¥0.04/百万，是输出价的 1/200），几乎白送。
+  （只在模型确实返回过时才带 —— 本项目支持任何 OpenAI 兼容接口，不能凭空塞人家不认识的字段。）
 
 请求结构也刻意做成"稳定前缀在前"，让 DeepSeek 的自动缓存命中（实测 80%~94%）。跑完直接报钱。
 
-**7. 一条命令自检，离线可复现。** `node cli.mjs --selftest` 有 85 项，不连浏览器、不调模型，
+**7. 一条命令自检，离线可复现。** `node cli.mjs --selftest` 有 93 项，不连浏览器、不调模型，
 还包含几条**源码级安全红线**（"绝不退回前台标签""绝不生成 auto_submit"这类）。
 
 ## 固定流程（五步）
@@ -149,10 +153,13 @@ node cli.mjs --selftest        # 离线自检（35 项）
 
 | 场景 | 每题 | 整卷 |
 | --- | --- | --- |
-| 文史概念题（不用工具） | ≈¥0.003 | 3 题 ≈¥0.009 |
-| 文史题 + 联网查证 | ≈¥0.005 | 3 题 ≈¥0.016 |
-| 理工计算题（matrix / calc） | ≈¥0.009 | 10 题 ≈¥0.09 |
-| 智慧树 27 题（文史 + 联网） | —— | ≈¥0.14 |
+| 文史概念题（不用工具） | ≈¥0.002～0.003 | 3 题 ≈¥0.006～0.009 |
+| 文史题 + 联网查证 | ≈¥0.003～0.010 | 3 题 ≈¥0.01～0.03 |
+| 理工计算题（matrix / calc） | ≈¥0.005～0.010 | 10 题 ≈¥0.05～0.10 |
+| 智慧树 27 题（文史 + 联网） | —— | ≈¥0.10～0.20 |
+
+> 区间这么宽是因为**输出 token 波动很大**（同一组题实测 3.6k～7.8k），
+> 而输出正是成本大头。下面几项优化都指向它。
 
 > 空闲时段（工作日 9-12、14-18 点之外，含周末全天）单价减半 —— **晚上做题基本按半价**。
 
@@ -203,7 +210,7 @@ browser = ""
 ## 测试
 
 ```bash
-node cli.mjs --selftest      # 85 项：平台注册表 / 桥接层 / 工具裁剪 / 答案单 / 联网判定 / 安全红线
+node cli.mjs --selftest      # 93 项：平台注册表 / 桥接层 / 工具裁剪 / 答案单 / 联网判定 / 安全红线
 node test/math-test.mjs      # 106 项，对照 numpy / scipy / sympy
 node test/real-test.mjs --paper examples/questions.json --expect examples/expected.json
 ```
