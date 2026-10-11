@@ -523,6 +523,10 @@ async function selftest() {
   t('工具裁剪：不确定就全发（纯图片题/文字过少 → 6 个）',
     pickToolsForQuestion({stem: '', stemOcr: '', stemImages: ['x'], options: [{text: '', images: ['y']}]}).length === 6
     && pickToolsForQuestion({stem: '计算', options: []}).length === 6);
+  t('工具裁剪：弱信号词已剔除（"多少/已知"不再触发数理）',
+    pickToolsForQuestion({stem: '第二次世界大战中，中国战场牵制了多少日军？', options: [{text: '甲'}]}).length === 3
+    && pickToolsForQuestion({stem: '已知最早的人类活动遗址位于', options: [{text: '甲'}]}).length === 3
+    && pickToolsForQuestion({stem: '求 x 等于多少', options: [{text: '甲'}]}).length === 6);
   t('工具裁剪：整卷只定一次（纯文史 3 个 / 混合卷 6 个）',
     (() => {
       const pickToolsForPaper = await_import_paper;
