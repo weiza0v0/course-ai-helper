@@ -504,12 +504,20 @@ async function selftest() {
     guardOut.split('\n')[1]);
 
   // 2c. 工具结果截断（省钱关键：超长结果会在后续每一轮被重发）
-  const {truncateToolResult} = await import('./lib/agent.mjs');
+  const {truncateToolResult, pickToolsForQuestion} = await import('./lib/agent.mjs');
   const long = 'x'.repeat(50000);
   const cut = truncateToolResult(long, 2000);
   t('工具结果截断：50000 → 2000 字符 + 截断说明',
     cut.length < 2100 && cut.includes('已截断') && cut.startsWith('x'.repeat(100)));
   t('工具结果截断：短结果原样返回', truncateToolResult('abc', 2000) === 'abc');
+
+  t('工具裁剪：文史题只发 calc+联网，数学题发全部',
+    (() => {
+      const hist = {stem: '沙盘推演实践教学有哪几个环节组成', options: [{text: '战役还原环节'}]};
+      const math = {stem: '求矩阵 A 的行列式 det(A)', options: [{text: '-2'}]};
+      return pickToolsForQuestion(hist).length === 3 && pickToolsForQuestion(math).length === 6
+        && pickToolsForQuestion(hist, 'all').length === 6;
+    })());
 
   // 3. 答案单
   const demo = {name: 'T', questions: [
@@ -587,8 +595,9 @@ async function solve(paper, settings) {
           break;
         case 'answer': {
           const a = Array.isArray(ev.answer) ? ev.answer.join('') : String(ev.answer ?? '');
-          const meaning = ev.meaning || ev.text || '';
-          console.log('  ' + c(label(q), 'dim') + ' ' + c('✅ ' + a, 'green') + (meaning ? '  ' + c(String(meaning).slice(0, 46), 'dim') : ''));
+          // 只显示关键词；终端别被长文本刷屏，也要能一眼核对该选哪个
+          const brief = String(ev.kw || '').replace(/\s+/g, ' ').slice(0, 24);
+          console.log('  ' + c(label(q), 'dim') + ' ' + c('✅ ' + a, 'green') + (brief ? '  ' + c(brief, 'dim') : ''));
           break;
         }
       }
@@ -817,6 +826,7 @@ async function doctor(platforms, CFG, opts) {
   info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort} · 并发 ${CFG.model.concurrency}`);
   info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）`);
   info(`    工具结果截断 ${CFG.model.max_tool_result_chars} 字符 · 网页类 ${CFG.model.web_result_chars} 字符 · 每题最多联网 ${CFG.model.max_web_calls} 次`);
+  info(`    工具集：${CFG.model.tool_mode === 'all' ? '全部 6 个（更贵）' : 'auto —— 按题目只发相关工具（文史题省约 2/3 固定开销）'}`);
   if (CFG.model.price_in || CFG.model.price_out) info(`    单价：输入 ${CFG.model.price_in} / 输出 ${CFG.model.price_out} 元每百万 token（会估算花费）`);
   else warn('    没填 price_in / price_out → 只报 token 数，不估算金额');
 
@@ -842,6 +852,7 @@ async function main() {
     // 每题最多让模型调几轮工具：config.toml 的 [model] max_tool_rounds，可用 --rounds 临时覆盖
     priceIn: CFG.model.price_in, priceOut: CFG.model.price_out,
     maxRounds: Number.isFinite(roundsOverride) && roundsOverride > 0 ? Math.min(roundsOverride, 20) : CFG.model.max_tool_rounds,
+    toolMode: CFG.model.tool_mode,
     maxToolResultChars: CFG.model.max_tool_result_chars,
     maxWebCalls: CFG.model.max_web_calls,
     webResultChars: CFG.model.web_result_chars,
