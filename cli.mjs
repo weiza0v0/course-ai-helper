@@ -591,80 +591,98 @@ const READY_PROBE = `(() => document.querySelectorAll('.examPaper_subject, .ques
  *   · 页面一旦有题目节点就注入页面脚本开始读题
  *   · **随时按 Enter 立即重测**
  */
-async function acquireAnswerPage({platform, port, CFG, timeoutSec = 900}) {
-  let force = false, go = false, readyPaper = null;
-  const off = onEnter(() => { if (readyPaper) go = true; else force = true; });
-
-  let session = null, tab = null, injected = false, elapsed = 0, tick = 0, lastRemind = 0;
+async function acquireAnswerPage({platform, port, CFG}) {
   const tty = !!process.stdin.isTTY;
+  let session = null, tab = null, elapsed = 0, probeN = 0, announced = false;
+  let wantStart = false;                       // 用户按了回车 = 开始读题
+  const off = onEnter(() => { wantStart = true; });
 
   step(`等你在浏览器里进入 ${platform.name} 的答题页`);
   if (platform.platformHint) info(c('    怎么进：' + platform.platformHint, 'dim'));
-  info(c('    我会自动识别；进去了就按 ' + (tty ? '回车' : '（非交互，识别到就直接开始）') + ' 开始解题', 'dim'));
+  info(c('    我只看不动；进去了按 ' + (tty ? '回车' : '（非交互：探测到就直接开始）') + ' 开始读题+解题', 'dim'));
   info('');
 
-  try {
-    while (true) {
-      if (go && readyPaper) { off(); return {session, tab, paper: readyPaper}; }
-      const woke = force; force = false;
-      if (woke && !readyPaper) info(c('    （立即重测）', 'dim'));
-      tick++;
+  const tryRead = async () => {
+    // —— 用户按了回车，才真正动手读卷
+    if (platform.mode === 'script') {
+      await session.eval(bridgeSource({
+        pollSeconds: CFG.app.poll_seconds,
+        fillIntervalMs: CFG.app.fill_interval_ms,
+        limitBackoffMs: CFG.app.limit_backoff_ms,
+      })).catch(() => {});
+      const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
+      await session.eval(preparePageScript(fs.readFileSync(helperPath, 'utf8'))).catch(e => {
+        info(c('    (脚本返回：' + String(e.message).slice(0, 60) + ')', 'dim'));
+      });
+      step('页面脚本已注入，正在读题…');
+      for (let i = 0; i < 50; i++) {
+        const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
+        if (raw) {
+          const paper = JSON.parse(raw);
+          if (paper && paper.questions && paper.questions.length) return paper;
+        }
+        await sleep(400);
+      }
+      return null;
+    }
+    const paper = await platform.readPaper(session).catch(() => null);
+    return paper && paper.questions && paper.questions.length ? paper : null;
+  };
 
-      // 还没就绪：扫标签 / 附加 / 注入 / 读题
-      if (!readyPaper) {
-        const tabs = await listTabs(port).catch(() => []);
-        const hit = tabs.find(t => platform.matchUrl.test(t.url));
-        if (hit && (!tab || hit.url !== tab.url)) {
-          if (session) { try { session.close(); } catch {} }
-          tab = hit; session = await CdpSession.attach(tab); injected = false;
-          ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
-        }
-        if (session) {
-          if (platform.mode === 'script') {
-            const n = await session.eval(READY_PROBE).catch(() => 0);
-            if (!injected && n > 0) {
-              await session.eval(bridgeSource({
-                pollSeconds: CFG.app.poll_seconds,
-                fillIntervalMs: CFG.app.fill_interval_ms,
-                limitBackoffMs: CFG.app.limit_backoff_ms,
-              })).catch(() => {});
-              const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
-              await session.eval(preparePageScript(fs.readFileSync(helperPath, 'utf8'))).catch(e => {
-                info(c('    (脚本返回：' + String(e.message).slice(0, 60) + ')', 'dim'));
-              });
-              injected = true;
-              step('页面脚本已注入，正在读题…');
-            }
-            const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
-            if (raw) {
-              const paper = JSON.parse(raw);
-              if (paper && paper.questions && paper.questions.length) readyPaper = paper;
-            }
-          } else if (tick % 2 === 1 || woke) {
-            const paper = await platform.readPaper(session).catch(() => null);
-            if (paper && paper.questions && paper.questions.length) readyPaper = paper;
-          }
-        }
-        if (readyPaper) {
-          console.log();
-          ok(c(`已就绪：${readyPaper.questions.length} 道题${readyPaper.name || readyPaper.title ? '（' + String(readyPaper.name || readyPaper.title).slice(0, 34) + '）' : ''}`, 'green'));
-          info(c('    核对一下浏览器里的页面没问题后，按 ', 'dim') + c('回车', 'bold') + c(' 开始解题（或按 Ctrl+C 退出）', 'dim'));
-          console.log();
-          if (!tty) { off(); return {session, tab, paper: readyPaper}; }   // 非交互：直接开跑
-          lastRemind = Date.now();
-        } else if (!woke && elapsed && elapsed % 20 === 0) {
-          const t2 = await listTabs(port).catch(() => []);
-          const near = t2.filter(t => platform.siteUrl && platform.siteUrl.test(t.url)).length;
-          info(c(`    还在等你进答题页…（${elapsed}s，${t2.length} 个标签${near ? `，其中 ${near} 个是 ${platform.name} 的页面但还不是答题页` : ''}）`, 'dim'));
-        }
-      } else if (tty && Date.now() - lastRemind > 60000) {
-        info(c('    仍在等你按回车（Ctrl+C 退出）', 'dim'));
-        lastRemind = Date.now();
+  try {
+    while (elapsed < 1800) {
+      // 1) 找答题页标签（**按标签 id 判断**，别被 SPA 改 hash 骗得反复重挂）
+      const tabs = await listTabs(port).catch(() => []);
+      const hit = tabs.find(t => platform.matchUrl.test(t.url));
+      if (hit && (!tab || hit.id !== tab.id)) {
+        if (session) { try { session.close(); } catch {} }
+        tab = hit;
+        session = await CdpSession.attach(tab);
+        probeN = 0; announced = false;
+        ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
       }
 
-      if (woke) await sleep(30);
-      else { await sleep(readyPaper ? 400 : 1000); elapsed++; }
-      if (!readyPaper && elapsed > timeoutSec) break;
+      // 2) 只读探测：页面上有没有题目节点（不注入任何东西）
+      if (session && !announced) {
+        probeN = await session.eval(READY_PROBE).catch(() => 0);
+        if (probeN > 0) {
+          announced = true;
+          console.log();
+          ok(c('已就绪 —— 页面上能找到题目', 'green'));
+          info(c('    核对一下浏览器里的页面没问题后，按 ', 'dim') + c('回车', 'bold') + c(' 开始读题+解题（Ctrl+C 退出）', 'dim'));
+          console.log();
+          if (!tty) wantStart = true;         // 非交互：直接开始
+        }
+      }
+
+      // 3) 用户按了回车 → 开始读题
+      if (wantStart) {
+        wantStart = false;
+        if (!session) {
+          warn('还没识别到答题页 —— 确认你在**这个浏览器窗口**里打开了答题界面，再按回车');
+        } else {
+          const paper = await tryRead();
+          if (paper) { off(); return {session, tab, paper}; }
+          console.log();
+          warn('这次没读到题目（页面可能还没加载完，或者题目在 iframe 里）');
+          info(c('    确认能看到题目和选项后，再按一次回车重试', 'dim'));
+          announced = false;                  // 允许重新探测
+          console.log();
+        }
+      }
+
+      // 4) 进度提示
+      if (elapsed && elapsed % 20 === 0) {
+        const t2 = await listTabs(port).catch(() => []);
+        const sitePages = t2.filter(t => platform.siteUrl && platform.siteUrl.test(t.url)).length;
+        const quizPages = t2.filter(t => platform.matchUrl.test(t.url)).length;
+        info(c(`    还在等你进答题页…（${elapsed}s，${t2.length} 个标签` +
+          (sitePages ? `，其中 ${sitePages} 个是 ${platform.name} 的页面` : '') +
+          (quizPages ? `，${quizPages} 个看起来是答题页` : '') + `）`, 'dim'));
+      }
+
+      await sleep(1000);
+      elapsed++;
     }
   } finally { off(); }
   return {session, tab, paper: null};
