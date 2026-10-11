@@ -96,6 +96,26 @@ $ node cli.mjs chaoxing "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?...
 
 想先登录好再跑：`node cli.mjs --login "<答题页链接>"`（或双击 `启动带调试浏览器.bat`）。
 
+### 浏览器和 profile 是怎么找的
+
+**不扫描磁盘**，只对各系统的标准位置做存在性检查（`fs.existsSync`）：
+
+| 系统 | 查这些位置 |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Google\Chrome\User Data`、`Chrome Beta`、`Chrome SxS`（Canary）、`Microsoft\Edge\User Data`、360 极速、QQ 浏览器、搜狗 |
+| macOS | `~/Library/Application Support/Google/Chrome`、`Chrome Beta`、`Chrome Canary`、`Microsoft Edge`、`Chromium` |
+| Linux | `~/.config/google-chrome`、`-beta`、`chromium`、`microsoft-edge` |
+
+分发出去以后，在别人机器上查的就是**他自己的** `%LOCALAPPDATA%`／`$HOME`，也就是他自己的账号 ——
+因为路径全部由环境变量拼出来，没有任何硬编码的用户名。
+
+**我们不解密 cookie**：只是把 profile 目录**交给 Chrome 自己**去用。
+所以 Chrome 127+ 的 App-Bound Encryption 对本工具毫无影响（那东西只挡"从外部读 cookie"的做法）。
+工具也从不读取 profile 里的任何文件。
+
+找不到时（浏览器装在非常规位置、便携版、小众浏览器）会**问你一次**，并把答案写进
+`config.toml` 的 `[cdp] browser`，以后不再问；也可以直接 `--browser "<路径>"` 或 `[cdp] profile` 指定。
+
 Windows 免安装：先 `node scripts/fetch-node.mjs` 拉一个便携 node，之后双击 `启动.bat`
 （会问你平台和链接）。
 

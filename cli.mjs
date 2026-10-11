@@ -20,13 +20,16 @@
  *   --list         只列出浏览器里的标签
  *   --login        只打开登录窗口（借用你日常浏览器登录态；登录完再跑上面那条命令）
  *   --profile <dir> 指定浏览器 profile 目录（默认自动：优先借你日常浏览器的登录态）
+ *   --browser <exe> 指定浏览器可执行文件（默认自动找；找不到会问你一次并记进 config.toml）
  *
  * 永不提交：本程序里没有任何"点提交/交卷"的代码。
  */
 import fs from 'node:fs';
+import readline from 'node:readline';
+import {spawn, spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {loadConfig} from './lib/config.mjs';
+import {loadConfig, saveCdpSetting} from './lib/config.mjs';
 import {loadPlatforms} from './lib/platforms.mjs';
 import {listTabs, CdpSession} from './lib/cdp.mjs';
 import {solvePaper} from './lib/agent.mjs';
@@ -108,21 +111,58 @@ async function browserRunning() {
   return null;
 }
 
-/** 日常浏览器的 profile 目录（用它 = 你已登录的账号，通常零登录） */
-function defaultProfileDir() {
+/**
+ * 日常浏览器的 profile 目录候选表。
+ *
+ * ★ 这里**只做 fs.existsSync 存在性检查**，不扫描磁盘、不读取任何浏览器数据文件。
+ *   这些路径都是 Chromium 系浏览器的公开约定位置（各系统固定）。
+ *   ★ 关键：我们不需要解密 cookie —— 我们是把整个 profile 目录**交给 Chrome 自己**去用，
+ *     Chrome 会带着用户已登录的会话打开页面。所以 Chrome 127+ 的 App-Bound Encryption
+ *     对本工具毫无影响（那玩意只挡"从外部解密 cookie"的做法）。
+ */
+function profileCandidates() {
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  const cands = process.platform === 'win32' ? [
-    path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/User Data'),
-    path.join(process.env.LOCALAPPDATA || '', 'Microsoft/Edge/User Data'),
-  ] : process.platform === 'darwin' ? [
-    path.join(home, 'Library/Application Support/Google/Chrome'),
-    path.join(home, 'Library/Application Support/Microsoft Edge'),
-  ] : [
-    path.join(home, '.config/google-chrome'),
-    path.join(home, '.config/chromium'),
-    path.join(home, '.config/microsoft-edge'),
+  const L = process.env.LOCALAPPDATA || '';       // Windows：当前用户
+  const A = process.env.APPDATA || '';
+  if (process.platform === 'win32') return [
+    ['Chrome', path.join(L, 'Google/Chrome/User Data')],
+    ['Chrome Beta', path.join(L, 'Google/Chrome Beta/User Data')],
+    ['Chrome Dev', path.join(L, 'Google/Chrome Dev/User Data')],
+    ['Chrome Canary', path.join(L, 'Google/Chrome SxS/User Data')],
+    ['Edge', path.join(L, 'Microsoft/Edge/User Data')],
+    ['Edge Beta', path.join(L, 'Microsoft/Edge Beta/User Data')],
+    ['360 极速浏览器', path.join(L, '360Chrome/Chrome/User Data')],
+    ['QQ 浏览器', path.join(L, 'Tencent/QQBrowser/User Data')],
+    ['搜狗浏览器', path.join(A, 'SogouExplorer/User Data')],
   ];
-  return cands.find(d => d && fs.existsSync(d)) || null;
+  if (process.platform === 'darwin') return [
+    ['Chrome', path.join(home, 'Library/Application Support/Google/Chrome')],
+    ['Chrome Beta', path.join(home, 'Library/Application Support/Google/Chrome Beta')],
+    ['Chrome Canary', path.join(home, 'Library/Application Support/Google/Chrome Canary')],
+    ['Edge', path.join(home, 'Library/Application Support/Microsoft Edge')],
+    ['Chromium', path.join(home, 'Library/Application Support/Chromium')],
+  ];
+  return [
+    ['Chrome', path.join(home, '.config/google-chrome')],
+    ['Chrome Beta', path.join(home, '.config/google-chrome-beta')],
+    ['Chromium', path.join(home, '.config/chromium')],
+    ['Edge', path.join(home, '.config/microsoft-edge')],
+  ];
+}
+
+/** 看起来像个真 profile 吗（有 Default/ 或 Local State）—— 免得选到空壳目录 */
+function looksLikeProfile(dir) {
+  try {
+    return fs.existsSync(path.join(dir, 'Default')) || fs.existsSync(path.join(dir, 'Local State'));
+  } catch { return false; }
+}
+
+/** 返回 {dir, name, checked:[{name,dir,exists}]}；找不到就 dir=null（调用方会退回助手 profile） */
+function findDefaultProfile() {
+  const cands = profileCandidates().filter(([, d]) => d);
+  const checked = cands.map(([name, dir]) => ({name, dir, exists: fs.existsSync(dir) && looksLikeProfile(dir)}));
+  const hit = checked.find(c => c.exists);
+  return {dir: hit ? hit.dir : null, name: hit ? hit.name : null, checked};
 }
 
 function helperProfileDir() {
@@ -139,9 +179,12 @@ function helperProfileDir() {
 async function pickProfile(explicit) {
   if (explicit) return {dir: explicit, why: '指定的 profile（--profile）', real: false};
   const running = await browserRunning();
-  const def = defaultProfileDir();
+  const {dir: def, name: defName, checked} = findDefaultProfile();
   if (def && !running) {
-    return {dir: def, why: '你日常浏览器的登录态 —— 通常不用再登录', real: true};
+    return {dir: def, why: `你日常的 ${defName} 登录态 —— 通常不用再登录`, real: true};
+  }
+  if (!def) {
+    return {dir: helperProfileDir(), why: '没在你机器上找到常见的浏览器 profile（下面列了查过的位置），用助手专用 profile（登录一次会记住）', real: false, checked};
   }
   if (running) {
     return {dir: helperProfileDir(), why: `你的 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行（它锁着 profile，也连不上调试端口）。改用助手专用 profile：**登录一次就会记住**，以后不再问`, real: false};
@@ -149,35 +192,97 @@ async function pickProfile(explicit) {
   return {dir: helperProfileDir(), why: '助手专用 profile（登录一次就会记住）', real: false};
 }
 
-/** 浏览器调试端口连不上就用它拉一个 Chrome/Edge（带 --remote-debugging-port） */
-async function ensureBrowser(port, url, profileDir) {
-  try { const t = await listTabs(port); return {ok: true, launched: false, tabs: t}; } catch {}
-  const profile = profileDir || helperProfileDir();
+/** 找不到日常 profile 时，把查过的位置打印出来（用户可以用 --profile 手动指） */
+function explainProfileSearch(prof) {
+  if (!prof.checked) return;
+  info(c('    查过这些位置（都要求目录里有 Default/ 或 Local State）：', 'dim'));
+  for (const c of prof.checked) info(c(`      ${c.exists ? '✓' : '·'} ${c.name.padEnd(14)} ${c.dir}`, 'dim'));
+  info(c('    你的浏览器装在别处？用 --profile "<User Data 目录>" 指定，或在 config.toml 里写 [cdp] profile', 'dim'));
+}
+
+/** 常见安装位置（只做存在性检查）。想让用户自己填就用 config 的 [cdp] browser */
+function detectBrowserExe() {
   const cands = process.platform === 'win32' ? [
     path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'),
     path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google/Chrome/Application/chrome.exe'),
     path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'),
     path.join(process.env['ProgramFiles'] || '', 'Microsoft/Edge/Application/msedge.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || '', 'Microsoft/Edge/Application/msedge.exe'),
   ] : process.platform === 'darwin' ? [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
   ] : ['google-chrome', 'google-chrome-stable', 'chromium', 'microsoft-edge'];
-  const args = [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', url || 'about:blank'];
-  let exe = null;
-  for (const c of cands) { if (c.includes('/') || c.includes('\\')) { if (fs.existsSync(c)) { exe = c; break; } } else exe = exe || c; }
-  if (!exe) {
-    bad('连不上浏览器调试端口，也没找到 Chrome/Edge。请手动启动：');
-    info(c(`    chrome --remote-debugging-port=${port} --user-data-dir="${profile}" "${url || ''}"`, 'dim'));
+  for (const c of cands) {
+    if (!c) continue;
+    if (c.includes('/') || c.includes('\\')) { if (fs.existsSync(c)) return c; }
+    else if (commandExists(c)) return c;   // PATH 里的命令名：确认真能跑再返回
+  }
+  return null;
+}
+
+/** PATH 里有没有这个命令（bare name 不能只看非空） */
+function commandExists(name) {
+  try {
+    const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], {stdio: 'ignore'});
+    return r.status === 0;
+  } catch { return false; }
+}
+
+/** 交互式问一次浏览器路径（并写回 config.toml，以后不再问） */
+function ask(question) {
+  return new Promise(resolve => {
+    const rl = readline.createInterface({input: process.stdin, output: process.stdout});
+    rl.question(question, ans => { rl.close(); resolve(String(ans || '').trim()); });
+  });
+}
+
+async function resolveBrowserExe(cfg, opts, {interactive = true} = {}) {
+  for (const cand of [opts.browser, cfg.cdp?.browser]) {
+    if (!cand) continue;
+    if (fs.existsSync(cand) || !cand.includes(path.sep)) return cand;
+    warn(`config 里的浏览器路径不存在：${cand}`);
+  }
+  const auto = detectBrowserExe();
+  if (auto && (auto.includes('/') || auto.includes('\\') ? fs.existsSync(auto) : true)) return auto;
+
+  info('');
+  warn('没找到 Chrome / Edge。可以自己填它的完整路径（只问这一次，会记进 config.toml）');
+  const example = process.platform === 'win32' ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    : process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    : '/usr/bin/google-chrome';
+  info(c(`    例：${example}`, 'dim'));
+  if (!interactive || !process.stdin.isTTY) {
+    bad('请把路径填到 config.toml 的 [cdp] browser，或用 --browser "<路径>"');
     process.exit(2);
   }
+  const p = await ask('  浏览器完整路径（直接回车=放弃）: ');
+  if (!p) { bad('没有浏览器就没法继续。也可以用 --login 模式先手动开一个（见 README）'); process.exit(2); }
+  if (!fs.existsSync(p)) { bad(`这个路径不存在：${p}`); process.exit(2); }
+  try {
+    const file = saveCdpSetting(__dirname, process.env.CONFIG_FILE || '', 'browser', p);
+    ok('已记住：' + path.relative(__dirname, file) + ' → [cdp] browser');
+  } catch (e) { warn('写配置失败（不影响本次运行）：' + e.message); }
+  return p;
+}
+
+/** 浏览器调试端口连不上就用它拉一个 Chrome/Edge（带 --remote-debugging-port） */
+async function ensureBrowser(port, url, profileDir, exePath) {
+  try { const t = await listTabs(port); return {ok: true, launched: false, tabs: t}; } catch {}
+  const profile = profileDir || helperProfileDir();
+  const args = [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', url || 'about:blank'];
+  const exe = exePath || detectBrowserExe();
+  if (!exe) { bad('没找到浏览器可执行文件（用 --browser 指定，或在 config.toml 里填 [cdp] browser）'); process.exit(2); }
   info(c(`    未发现调试端口 ${port}，正在启动浏览器：${path.basename(exe)}`, 'dim'));
   info(c(`    profile：${profile}`, 'dim'));
-  const launch = async prof => {
+  let launchErr = null;
+  const launch = prof => {
     const a = args.map(x => x.startsWith('--user-data-dir=') ? `--user-data-dir=${prof}` : x);
-    const {spawn} = await import('node:child_process');
-    spawn(exe, a, {detached: true, stdio: 'ignore'}).unref();
+    const child = spawn(exe, a, {detached: true, stdio: 'ignore'});
+    // ★ spawn 的失败是异步 'error' 事件，try/catch 抓不到，必须挂监听
+    child.on('error', e => { launchErr = e; });
+    child.unref();
   };
-  try { await launch(profile); } catch (e) { bad('启动浏览器失败：' + e.message); process.exit(2); }
+  launch(profile);
 
   // 真实 profile 可能刚好被占用（Chrome 正开着）→ 等一会儿再回退到助手 profile
   const waitPort = async secs => {
@@ -188,10 +293,17 @@ async function ensureBrowser(port, url, profileDir) {
     return null;
   };
   let tabs = await waitPort(12);
+  if (!tabs && launchErr) {
+    bad(`启动不了浏览器（${exe}）：${launchErr.message}`);
+    info('  请手动启动一个带调试端口的浏览器，然后重跑：');
+    info(c(`    chrome --remote-debugging-port=${port} --user-data-dir="<某个目录>"`, 'dim'));
+    process.exit(2);
+  }
   if (!tabs && profile !== helperProfileDir()) {
     warn('借不到你日常浏览器的 profile（可能刚好被占用），改用助手专用 profile（登录一次会记住）');
-    try { await launch(helperProfileDir()); } catch {}
+    launch(helperProfileDir());
     tabs = await waitPort(20);
+    if (!tabs && launchErr) { bad(`启动不了浏览器（${exe}）：${launchErr.message}`); process.exit(2); }
     if (tabs) return {ok: true, launched: true, tabs, profile: helperProfileDir()};
   }
   if (!tabs) { bad(`等了 30 秒还是连不上端口 ${port}`); process.exit(2); }
@@ -396,10 +508,12 @@ async function main() {
   // ---- 只打开登录窗口（不需要平台）
   if (flags.has('login')) {
     const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '');
-    const b = await ensureBrowser(port, opts.url, prof.dir);
+    const exe = await resolveBrowserExe(CFG, opts);
+    const b = await ensureBrowser(port, opts.url, prof.dir, exe);
     ok(`浏览器已就绪（端口 ${port}）`);
     info(c(`    profile：${b.profile || prof.dir}`, 'dim'));
     info(c(`    ${prof.why}`, 'dim'));
+    explainProfileSearch(prof);
     if (opts.url) { const t = await resolveTab(port, opts.url); if (t) info('    已打开：' + String(opts.url).slice(0, 90)); }
     info('');
     info('  请在窗口里登录并进入答题界面，然后重跑：');
@@ -425,9 +539,12 @@ async function main() {
 
   // ---- 浏览器：没开就拉起来（尽量借用你日常的登录态）
   const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '');
-  const br = await ensureBrowser(port, url, prof.dir);
+  const exe = await resolveBrowserExe(CFG, opts);
+  const br = await ensureBrowser(port, url, prof.dir, exe);
   ok(`浏览器就绪（端口 ${port}${br.launched ? '，刚启动' : '，已连接'}）`);
-  info(c(`    profile：${br.profile || prof.dir} —— ${prof.why}`, 'dim'));
+  info(c(`    profile：${br.profile || prof.dir}`, 'dim'));
+  info(c(`    ${prof.why}`, 'dim'));
+  explainProfileSearch(prof);
   let tab = null;
   if (url) {
     tab = await resolveTab(port, url, {forceNew: flags.has('new')});

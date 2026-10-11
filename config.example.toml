@@ -1,15 +1,7 @@
 # ============================================================
 #  在线课程 AI 答题助手 —— 配置文件
-#  改完保存，在网页上点「重载配置」即可生效（不用重启）
+#  改完直接重新运行 cli.mjs 即可生效（不用重启任何服务）
 # ============================================================
-
-[server]
-# 本地服务端口（网页地址就是 http://127.0.0.1:<port>/）
-port = 8787
-# 默认平台：mooc / chaoxing / zhihuishu（网页上也能随时切，切换会记在 data/platform.txt）
-platform = "mooc"
-# 启动时自动打开浏览器
-open_browser = true
 
 [model]
 # 任何 OpenAI 兼容接口都可以
@@ -33,20 +25,31 @@ timeout_seconds = 300
 max_retries = 3
 
 [app]
-# 控制台脚本一上传题目，后端就自动开始解题
+# 读到题目后自动开始解题
 auto_solve = true
-# 出答案后自动把答案推回页面并勾选（只在控制台脚本还活着时有效）
-# 本工具只负责"填"，交卷永远由你自己点
+# 出答案后自动把答案推回页面并勾选（本工具只负责"填"，交卷永远由你自己点）
+# 想只看答案不动页面：加 --no-fill 或 --sheet
 auto_fill = true
-# 控制台脚本查答案的轮询间隔（秒）
+# 页面脚本查答案的轮询间隔（秒）
 poll_seconds = 2
-# ★ 两次勾选之间的间隔（毫秒）。MOOC 页面每勾一个选项就发一次 saveDraftAnswers 草稿写请求，
-#   一秒内连点会被平台判为"并发限制，请稍后再试"—— 这个间隔就是用来错开这些请求的。
+# ★ 两次勾选之间的间隔（毫秒）。MOOC 页面每勾一个选项就发一次草稿写请求，
+#   一秒内连点会被判"并发限制，请稍后再试" —— 这个间隔就是用来错开这些请求的。
 fill_interval_ms = 400
 # 撞到平台"并发限制"弹窗后等多久再继续（毫秒）
 limit_backoff_ms = 3000
 
 [cdp]
+# 浏览器可执行文件路径。留空 = 自动在常见位置找；
+# 找不到时会问你一次，并把答案写回这里。
+# Windows 例： browser = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+# macOS  例： browser = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+# Linux  例： browser = '/usr/bin/google-chrome'
+browser = ""
+# 用哪个浏览器 profile：
+#   留空（推荐）= 你的日常浏览器没在运行时，直接借用它的登录态（零登录）；
+#                 正在运行则用助手专用 profile（登录一次会记住）
+#   也可以写死路径，比如 profile = 'C:\Users\me\AppData\Local\Google\Chrome\User Data'
+profile = ""
 # 有些平台（如智慧树）把题干预设在**闭合 Shadow DOM** 里，页面内的脚本读不到，
 # 必须让助手直连浏览器的调试端口去**只读**读取。启用方式见 启动带调试浏览器.bat
 # 调试端口（要和启动 Chrome 时的 --remote-debugging-port 一致）
