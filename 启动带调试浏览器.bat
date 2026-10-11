@@ -1,64 +1,49 @@
 @echo off
 chcp 65001 >nul
-title Browser with debug port - AI helper (READ ONLY mode)
+title Open a browser the helper can attach to
 cd /d "%~dp0"
 
-rem ============================================================
-rem  Launches Chrome/Edge with a debugging port so the helper can
-rem  READ the quiz page (some platforms hide the question text in a
-rem  closed Shadow DOM - page scripts cannot see it).
+rem ================================================================
+rem  KEEP THIS FILE PURE ASCII.
+rem  cmd.exe parses .bat in the OEM codepage (GBK on CN Windows);
+rem  UTF-8 Chinese here gets shredded into garbage commands.
 rem
-rem  The helper NEVER clicks / fills / submits in this mode.
-rem  It only reads the paper and writes an answer sheet for you.
-rem ============================================================
+rem  This just opens a browser window that cli.mjs can attach to.
+rem  READ ONLY in this mode: nothing is clicked, filled or submitted.
+rem ================================================================
 
-set "PORT=9222"
-rem  The profile goes to the user folder, NOT into the repo
-rem  (it holds login cookies - never commit it)
-set "PROFILE=%USERPROFILE%\.course-ai-helper-profile"
-set "TARGET=https://passport.zhihuishu.com/login"
-
-set "CHROME="
-for %%P in (
-  "%ProgramFiles%\Google\Chrome\Application\chrome.exe"
-  "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
-  "%LocalAppData%\Google\Chrome\Application\chrome.exe"
-  "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
-  "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
-) do (
-  if not defined CHROME if exist %%P set "CHROME=%%~P"
+set "NODEEXE="
+if exist "runtime\node.exe" set "NODEEXE=runtime\node.exe"
+if not defined NODEEXE (
+  where node >nul 2>nul
+  if not errorlevel 1 set "NODEEXE=node"
 )
-
-if not defined CHROME (
+if not defined NODEEXE (
   echo.
-  echo   [ERROR] Chrome / Edge not found in the usual places.
-  echo.
-  echo   Please start your browser manually with these flags:
-  echo     --remote-debugging-port=%PORT%
-  echo     --user-data-dir="%PROFILE%"
-  echo.
-  echo   Then open the quiz page in it and click the read button
-  echo   in the helper web page.
+  echo   [ERROR] Node.js not found.
+  echo   Install Node 18+ from https://nodejs.org/
+  echo   Or run "node scripts\fetch-node.mjs" on a machine with internet
+  echo   and put node.exe into the runtime folder.
   echo.
   pause
   exit /b 1
 )
 
 echo.
-echo   Browser : %CHROME%
-echo   Port    : %PORT%
-echo   Profile : %PROFILE%
-  echo             - outside the repo on purpose, it holds login cookies
+echo   This opens a browser window that the helper can attach to.
 echo.
-echo   1) Log in inside the new window
-echo   2) Open the homework page (so you can see the questions)
-echo   3) Go back to the helper web page and click "read now"
-echo.
-echo   NOTE: READ ONLY in this mode - nothing is clicked, filled or submitted.
-  echo         For reading only (zhihuishu) you can also just use start.bat.
+echo   - Usually you do NOT need this file: just run  start.bat
+echo     (it launches the browser itself when needed).
+echo   - Use this one if you want to log in FIRST and then run.
+echo   - It reuses your normal browser login when possible. That needs
+echo     Chrome/Edge to be fully closed; otherwise it falls back to a
+echo     helper-only profile where you log in ONCE and it is remembered.
 echo.
 
-start "" "%CHROME%" --remote-debugging-port=%PORT% --user-data-dir="%PROFILE%" --no-first-run --no-default-browser-check "%TARGET%"
+set "URL="
+set /p URL=  Quiz page URL (optional, Enter = just open the browser): 
 
-timeout /t 2 >nul
-exit /b 0
+echo.
+"%NODEEXE%" cli.mjs --login "%URL%"
+echo.
+pause

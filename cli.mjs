@@ -18,6 +18,8 @@
  *   --sheet        只出答案单，不碰页面（智慧树这类平台默认如此）
  *   --no-fill      解题但不动页面
  *   --list         只列出浏览器里的标签
+ *   --login        只打开登录窗口（借用你日常浏览器登录态；登录完再跑上面那条命令）
+ *   --profile <dir> 指定浏览器 profile 目录（默认自动：优先借你日常浏览器的登录态）
  *
  * 永不提交：本程序里没有任何"点提交/交卷"的代码。
  */
@@ -87,12 +89,70 @@ function platformMenu(platforms) {
   return platforms.map((p, i) => `    ${p.order || i + 1}. ${p.name.padEnd(12)} ${p.id}${p.mode === 'cdp' ? '   (CDP 只读 → 答案单)' : ''}`).join('\n');
 }
 
+/** 浏览器在跑吗？（在跑的话没法附加调试端口，也不能用它的 profile —— Chrome 会锁住） */
+async function browserRunning() {
+  const {execFile} = await import('node:child_process');
+  const run = cmd => new Promise(res => execFile(cmd[0], cmd.slice(1), {timeout: 5000}, (e, out) => res(String(out || ''))));
+  try {
+    if (process.platform === 'win32') {
+      const out = await run(['tasklist', '/FI', 'IMAGENAME eq chrome.exe']);
+      if (/chrome\.exe/i.test(out)) return 'chrome';
+      const out2 = await run(['tasklist', '/FI', 'IMAGENAME eq msedge.exe']);
+      if (/msedge\.exe/i.test(out2)) return 'edge';
+      return null;
+    }
+    const out = await run(['ps', '-A', '-o', 'comm=']);
+    if (/Google Chrome|chrome$/m.test(out)) return 'chrome';
+    if (/msedge|Microsoft Edge/m.test(out)) return 'edge';
+  } catch {}
+  return null;
+}
+
+/** 日常浏览器的 profile 目录（用它 = 你已登录的账号，通常零登录） */
+function defaultProfileDir() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const cands = process.platform === 'win32' ? [
+    path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/User Data'),
+    path.join(process.env.LOCALAPPDATA || '', 'Microsoft/Edge/User Data'),
+  ] : process.platform === 'darwin' ? [
+    path.join(home, 'Library/Application Support/Google/Chrome'),
+    path.join(home, 'Library/Application Support/Microsoft Edge'),
+  ] : [
+    path.join(home, '.config/google-chrome'),
+    path.join(home, '.config/chromium'),
+    path.join(home, '.config/microsoft-edge'),
+  ];
+  return cands.find(d => d && fs.existsSync(d)) || null;
+}
+
+function helperProfileDir() {
+  const home = process.env.HOME || process.env.USERPROFILE || '.';
+  return path.join(home, '.course-ai-helper-profile');
+}
+
+/**
+ * 决定用哪个 profile：
+ *   1) --profile / config 指定
+ *   2) 日常浏览器**没在跑** → 直接用它的 profile（已登录，零登录）
+ *   3) 否则用助手专用 profile（登录一次，之后一直记得）
+ */
+async function pickProfile(explicit) {
+  if (explicit) return {dir: explicit, why: '指定的 profile（--profile）', real: false};
+  const running = await browserRunning();
+  const def = defaultProfileDir();
+  if (def && !running) {
+    return {dir: def, why: '你日常浏览器的登录态 —— 通常不用再登录', real: true};
+  }
+  if (running) {
+    return {dir: helperProfileDir(), why: `你的 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行（它锁着 profile，也连不上调试端口）。改用助手专用 profile：**登录一次就会记住**，以后不再问`, real: false};
+  }
+  return {dir: helperProfileDir(), why: '助手专用 profile（登录一次就会记住）', real: false};
+}
+
 /** 浏览器调试端口连不上就用它拉一个 Chrome/Edge（带 --remote-debugging-port） */
-async function ensureBrowser(port, url) {
+async function ensureBrowser(port, url, profileDir) {
   try { const t = await listTabs(port); return {ok: true, launched: false, tabs: t}; } catch {}
-  const profile = process.env.BROWSER_PROFILE || (process.platform === 'win32'
-    ? path.join(process.env.USERPROFILE || process.env.HOME || '.', '.course-ai-helper-profile')
-    : path.join(process.env.HOME || '.', '.course-ai-helper-profile'));
+  const profile = profileDir || helperProfileDir();
   const cands = process.platform === 'win32' ? [
     path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'),
     path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google/Chrome/Application/chrome.exe'),
@@ -111,16 +171,31 @@ async function ensureBrowser(port, url) {
     process.exit(2);
   }
   info(c(`    未发现调试端口 ${port}，正在启动浏览器：${path.basename(exe)}`, 'dim'));
-  try {
+  info(c(`    profile：${profile}`, 'dim'));
+  const launch = async prof => {
+    const a = args.map(x => x.startsWith('--user-data-dir=') ? `--user-data-dir=${prof}` : x);
     const {spawn} = await import('node:child_process');
-    spawn(exe, args, {detached: true, stdio: 'ignore'}).unref();
-  } catch (e) { bad('启动浏览器失败：' + e.message); process.exit(2); }
-  for (let i = 0; i < 40; i++) {
-    await new Promise(r => setTimeout(r, 700));
-    try { const t = await listTabs(port); if (t.length) return {ok: true, launched: true, tabs: t}; } catch {}
+    spawn(exe, a, {detached: true, stdio: 'ignore'}).unref();
+  };
+  try { await launch(profile); } catch (e) { bad('启动浏览器失败：' + e.message); process.exit(2); }
+
+  // 真实 profile 可能刚好被占用（Chrome 正开着）→ 等一会儿再回退到助手 profile
+  const waitPort = async secs => {
+    for (let i = 0; i < secs * 2; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try { const t = await listTabs(port); if (t.length) return t; } catch {}
+    }
+    return null;
+  };
+  let tabs = await waitPort(12);
+  if (!tabs && profile !== helperProfileDir()) {
+    warn('借不到你日常浏览器的 profile（可能刚好被占用），改用助手专用 profile（登录一次会记住）');
+    try { await launch(helperProfileDir()); } catch {}
+    tabs = await waitPort(20);
+    if (tabs) return {ok: true, launched: true, tabs, profile: helperProfileDir()};
   }
-  bad(`等了 30 秒还是连不上端口 ${port}`);
-  process.exit(2);
+  if (!tabs) { bad(`等了 30 秒还是连不上端口 ${port}`); process.exit(2); }
+  return {ok: true, launched: true, tabs, profile};
 }
 
 /** 找到/打开目标标签：同链接复用，否则新开一个 */
@@ -318,6 +393,21 @@ async function main() {
 
   if (!settings.apiKey) { bad('config.toml 里没填 api_key'); process.exit(2); }
 
+  // ---- 只打开登录窗口（不需要平台）
+  if (flags.has('login')) {
+    const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '');
+    const b = await ensureBrowser(port, opts.url, prof.dir);
+    ok(`浏览器已就绪（端口 ${port}）`);
+    info(c(`    profile：${b.profile || prof.dir}`, 'dim'));
+    info(c(`    ${prof.why}`, 'dim'));
+    if (opts.url) { const t = await resolveTab(port, opts.url); if (t) info('    已打开：' + String(opts.url).slice(0, 90)); }
+    info('');
+    info('  请在窗口里登录并进入答题界面，然后重跑：');
+    info(c('    node cli.mjs <平台> "<答题页链接>"', 'bold'));
+    console.log();
+    return;
+  }
+
   // ---- 只认两个输入：平台 + 网页链接
   let platform = matchPlatform(platforms, opts.platform);
   let url = opts.url;
@@ -333,9 +423,11 @@ async function main() {
     warn(`这个链接看起来不像 ${platform.name} 的页面 —— 仍按 ${platform.name} 处理`);
   }
 
-  // ---- 浏览器：没开就拉起来；有标签就复用，否则开一个
-  const br = await ensureBrowser(port, url);
+  // ---- 浏览器：没开就拉起来（尽量借用你日常的登录态）
+  const prof = await pickProfile(opts.profile || CFG.cdp?.profile || '');
+  const br = await ensureBrowser(port, url, prof.dir);
   ok(`浏览器就绪（端口 ${port}${br.launched ? '，刚启动' : '，已连接'}）`);
+  info(c(`    profile：${br.profile || prof.dir} —— ${prof.why}`, 'dim'));
   let tab = null;
   if (url) {
     tab = await resolveTab(port, url, {forceNew: flags.has('new')});
