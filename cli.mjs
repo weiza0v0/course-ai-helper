@@ -535,6 +535,39 @@ async function selftest() {
   t('搜索相关性闸门：整串命中（模型把整句当查询）放行',
     relevantEnough('五言长城是谁', [{title: '五言长城是谁', snippet: '即刘长卿'}]) === true);
   t('搜索相关性闸门：空结果不放行', relevantEnough('任意查询', []) === false);
+  // ★ 借鉴 @deepseek-ai/dsh-tool-web（MIT）的多查询设计：一次调用收 1~4 条查询并发执行、
+  //   轮询合并、按 URL 去重。目的不是"搜得更多"，而是**少几轮往返** ——
+  //   模型每多调一次工具，就要把整段对话重发一次，轮次才是真正的成本来源。
+  const {mergeSearchLists, queryBudgetCost, normalizeQueries, trimLeadingNav} = await import('./lib/tools.mjs');
+  // ★ Node 抓不到"正文容器"（没 DOM），用"导航是短词、正文是长句"近似跳过导航。
+  //   实测 360百科前 600 字全是「网页/资讯/AI问答/视频/登录/注册…」，把截断窗口吃光。
+  {
+    const nav = ['网页', '资讯', 'AI问答', '视频', '图片', '登录', '注册'].join('\n');
+    const prose = '不列颠战役是第二次世界大战期间纳粹德国对英国发动的大规模空战，也是二战中规模最大的空战。';
+    t('跳过导航：从第一条长行开始取', trimLeadingNav(nav + '\n' + prose) === prose);
+    t('跳过导航：首行就是正文时原样不动', trimLeadingNav(prose + '\n' + nav) === prose + '\n' + nav);
+    t('跳过导航：全页都是短条目（目录型）不误伤',
+      trimLeadingNav(nav) === nav);
+  }
+  // ★ 预算必须按"查询条数"算：一次 web_search 最多带 4 条查询，
+  //   若按调用次数算，max_web_calls=3 实际会放行 12 条查询，预算形同虚设（实测踩到）。
+  t('联网预算：按查询条数计费，不按调用次数',
+    queryBudgetCost({queries: ['a', 'b', 'c', 'd']}) === 4
+    && queryBudgetCost({query: 'a'}) === 1
+    && queryBudgetCost({queries: ['a', 'a', 'b']}) === 2
+    && queryBudgetCost({}) === 1);
+  t('联网预算：最多 4 条查询（超出截断）',
+    normalizeQueries({queries: ['a', 'b', 'c', 'd', 'e', 'f']}).length === 4);
+  {
+    const A = [{title: 'a1', url: 'https://x.com/1'}, {title: 'a2', url: 'https://x.com/2'}, {title: 'a3', url: 'https://x.com/3'}];
+    const B = [{title: 'b1', url: 'https://y.com/9'}, {title: 'a1dup', url: 'https://x.com/1/'}, {title: 'b2', url: 'https://y.com/2'}];
+    const merged = mergeSearchLists([A, B], 5).map(r => r.title).join(',');
+    t('搜索合并：轮询取样（每条查询都能贡献头号结果）', merged === 'a1,b1,a2,b2,a3', merged);
+    t('搜索合并：按 URL 去重（尾斜杠/锚点视为同一个）',
+      mergeSearchLists([A, B], 9).filter(r => /dup/.test(r.title)).length === 0);
+    t('搜索合并：遵守总数上限', mergeSearchLists([A, B], 2).length === 2);
+    t('搜索合并：空输入不炸', mergeSearchLists([[], []], 5).length === 0);
+  }
   // ★ 打分选最优：只判"有没有任一词命中"不够 —— 实测查「量子纠缠 是什么 通俗解释」时，
   //   Bing 那份整体跑题的结果里第 4 条摘要偶然出现"量子纠缠"就足以过关。
   const {relevanceScore} = await import('./lib/tools.mjs');
