@@ -654,6 +654,22 @@ async function selftest() {
       cdpSrc.includes('后台标签没能保持后台'));
   }
 
+  // ★ 思考强度分档：文史 low / 数理 max。
+  //   理由是实测出来的：输出 token 占实际花费约 78%（输出 8 元/百万 vs 缓存输入 0.04 元/百万），
+  //   而思考 token 全部按输出价计费。
+  const {classifyQuestion, effortForQuestion} = await import('./lib/agent.mjs');
+  {
+    const hist = {stem: '沙盘推演实践教学有哪几个环节组成', options: [{text: '战役还原环节'}]};
+    const math = {stem: '求矩阵 A 的行列式 det(A)', options: [{text: '-2'}]};
+    const unsure = {stem: '', stemOcr: '', stemImages: ['x'], options: [{text: '', images: ['y']}]};
+    t('分类：文史 / 数理 / 不确定（纯图片题）三分',
+      classifyQuestion(hist) === 'humanities' && classifyQuestion(math) === 'mathy' && classifyQuestion(unsure) === 'unsure');
+    const st = {reasoningEffort: 'max', reasoningEffortHumanities: 'low'};
+    t('思考强度：文史降档到 low、数理用 max', effortForQuestion(hist, st) === 'low' && effortForQuestion(math, st) === 'max');
+    t('思考强度：不确定的题用数理档（宁可多花也别算错）', effortForQuestion(unsure, st) === 'max');
+    t('思考强度：可以关掉自动分档', effortForQuestion(hist, {...st, reasoningEffortAuto: false}) === 'max');
+    t('思考强度：文史档位可配成 off', effortForQuestion(hist, {...st, reasoningEffortHumanities: 'off'}) === 'off');
+  }
   t('工具裁剪：文史题只发 calc+联网，数学题发全部',
     (() => {
       const hist = {stem: '沙盘推演实践教学有哪几个环节组成', options: [{text: '战役还原环节'}]};
@@ -742,7 +758,7 @@ async function solve(paper, settings) {
       const q = paper.questions.find(x => x.qid === ev.qid) || {};
       switch (ev.type) {
         case 'start':
-          step(`读到 ${total} 道题，开始解题（${settings.model} · 思考 ${settings.reasoningEffort}）`);
+          step(`读到 ${total} 道题，开始解题（${settings.model} · 思考 ${settings.reasoningEffortAuto === false ? settings.reasoningEffort : `数理 ${settings.reasoningEffort} / 文史 ${settings.reasoningEffortHumanities}`}）`);
           break;
         case 'round':
           if (ev.round === 1) {
@@ -1001,7 +1017,7 @@ async function doctor(platforms, CFG, opts) {
 
   console.log();
   info('模型与成本：');
-  info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort} · 并发 ${CFG.model.concurrency}`);
+  info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort_auto === false ? CFG.model.reasoning_effort : `数理 ${CFG.model.reasoning_effort} / 文史 ${CFG.model.reasoning_effort_humanities}`} · 并发 ${CFG.model.concurrency}`);
   info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）`);
   info(`    工具结果截断 ${CFG.model.max_tool_result_chars} 字符 · 网页类 ${CFG.model.web_result_chars} 字符 · 每题搜索 ${CFG.model.max_web_calls} 条查询 / 抓网页 ${CFG.model.max_web_fetches} 次`);
   info(`    工具集：${CFG.model.tool_mode === 'all' ? '全部 6 个（默认，省心）' : 'auto —— 按卷子裁掉用不到的数理工具（省 ~2600 tokens/请求，可能误判）'}`);
@@ -1036,7 +1052,10 @@ async function main() {
     maxWebFetches: CFG.model.max_web_fetches,
     webResultChars: CFG.model.web_result_chars,
     useTools: CFG.model.use_tools,
-    reasoningEffort: CFG.model.reasoning_effort, timeoutSeconds: CFG.model.timeout_seconds,
+    reasoningEffort: CFG.model.reasoning_effort,
+    reasoningEffortAuto: CFG.model.reasoning_effort_auto,
+    reasoningEffortHumanities: CFG.model.reasoning_effort_humanities,
+    timeoutSeconds: CFG.model.timeout_seconds,
     maxRetries: CFG.model.max_retries,
   };
   const port = Number(opts.port || CFG.cdp?.port || 9222);
