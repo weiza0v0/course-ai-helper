@@ -784,7 +784,9 @@ async function solve(paper, settings) {
   if (usage.prompt || usage.completion) {
     const k = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const pin = Number(settings.priceIn) || 0, pout = Number(settings.priceOut) || 0;
-    const pCache = Number(settings.priceCacheIn) > 0 ? Number(settings.priceCacheIn) : pin / 10;   // 默认按命中价 1/10
+    // 缓存命中价没填就按 1/50 折算 —— deepseek-flash 现在是 0.04 / 2.0（高峰），正好 1/50。
+    // 早先按 1/10 折算是过时的，会把缓存读的部分高估 5 倍。
+    const pCache = Number(settings.priceCacheIn) > 0 ? Number(settings.priceCacheIn) : pin / 50;
     const hit = usage.cacheHit || 0, miss = usage.cacheMiss || Math.max(0, usage.prompt - hit);
     const rate = usage.prompt ? Math.round(hit / usage.prompt * 100) : 0;
     let cost = '';
