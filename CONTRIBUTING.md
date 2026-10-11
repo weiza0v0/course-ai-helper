@@ -6,26 +6,22 @@
 
 ### 🥇 1. 超星学习通答题态 DOM 校准（最高优先级）
 
-服务端、模型、数学工具全都就绪了，只差"正在作答的页面"长什么样。
+超星的页面脚本（`platforms/chaoxing/console/helper.js`）已经写好，但作者手上的账号所有作业都已提交，
+**没人验证过"正在作答"页面的真实 DOM**。你只需要：
 
-**你只需要**：在有未作答作业的账号上跑一次诊断，把输出贴到 issue。
-
-1. 打开没做过的作业/章节测验，进入能看到题目的界面
-2. `F12` → 控制台左上角把上下文切到题目所在的 **iframe**（超星是 iframe 套娃，见 [docs/chaoxing-adapter.md](docs/chaoxing-adapter.md)）
-3. 输入 `allow pasting` 回车，粘贴 `platforms/chaoxing/console/helper.js` 全文，回车
-4. 如果它说"没读到题目"，它已经自动打印了诊断；也可以手动跑 `__CX_HELPER__.diagnose()`
-5. 把诊断 JSON 贴到 issue
-
-拿到真实结构后，需要改的就只有 `console/helper.js` 里这几个函数：
-`Q_SELECTORS` / `optionNodes()` / `isSelected()` / `setOption()` / `fillText()`。
+1. 在自己的账号上打开一份**没做过**的作业，进入能看到题目的界面；
+2. 跑 `node cli.mjs chaoxing "<那个页面的链接>"`；
+3. 如果它说读不到题目，把打印出来的 DOM 诊断贴到 issue。
 
 ### 🥈 2. 新平台适配
 
 智慧树、雨课堂、学堂在线、钉钉课堂…… 适配一个平台基本只需要：
 
-- `platforms/<id>/index.mjs`：`id / name / mode / platformHint / allowOriginRe`（+ `mode='cdp'` 时导出 `readPaper()`）
-- `platforms/<id>/console/helper.js`：`collect()`（读题）+ `fill()`（写答案）
-- 不用改 `server.mjs`、不用改端口 —— 服务会自动发现新平台，网页上就多一个选项
+- `platforms/<id>/index.mjs`：`id / name / mode / matchUrl / platformHint`
+  - `mode: 'script'` → 再给一个 `pageScript`（页面脚本路径），并实现 `collect()` / `fill()`
+  - `mode: 'cdp'` → 导出 `readPaper(session)`（只读，用 CDP 的 `DOM.getDocument{pierce:true}`）+ `diagnose(session)`
+- 页面脚本里读题/填答的逻辑自己写（`platforms/*/console/helper.js` 可以当模板）
+- 不用改 `cli.mjs` —— 平台注册表会自动发现它
 
 平台专属的只有 `platforms/<id>/index.mjs`（标识/模式/跨域白名单）和一个控制台脚本 `console/helper.js`；
 其余（`lib/`、`public/`、`server.mjs`）是**所有平台共用的一份**，改动要保证其它平台不受影响。
@@ -48,7 +44,7 @@
 ```bash
 # 1. 跑测试
 cd course-ai-helper
-node test/selftest.mjs        # 应用层，67 项，离线可跑（含平台注册/切换/各平台契约）
+node cli.mjs --selftest       # 应用层，23 项，离线（平台注册/桥接层/答案单/工具实算）
 python3 test/math-ref.py > test/math-ref.json && node test/math-test.mjs   # 数学层，106 项
 node test/real-test.mjs --paper examples/questions.json --expect examples/expected.json   # 真实模型（要 key）
 ```

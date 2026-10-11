@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 打包成可分发 zip：node scripts/package.mjs [mooc|chaoxing|all]
+ * 打包成可分发 zip：node scripts/package.mjs
  * 产物在 dist/ 下，解压后双击 启动.bat 即可（若已用 fetch-node.mjs 拉过 node.exe 则免装 Node）。
  */
 import fs from 'node:fs';
@@ -27,7 +27,7 @@ function copy(src, dst) {
   }
 }
 
-const APP_FILES = ['server.mjs', 'lib', 'public', 'platforms', 'console', 'examples', 'docs', 'test', 'scripts', 'package.json', 'config.example.toml', '启动.bat', '启动带调试浏览器.bat', 'start.bat', 'README.md', 'LICENSE', '.gitignore'];
+const APP_FILES = ['cli.mjs', 'lib', 'platforms', 'examples', 'docs', 'test', 'scripts', 'package.json', 'config.example.toml', '启动.bat', '启动带调试浏览器.bat', 'start.bat', 'README.md', 'LICENSE', '.gitignore', 'runtime'];
 for (const p of targets) {
   const stage = path.join(DIST, p);
   rmrf(stage);

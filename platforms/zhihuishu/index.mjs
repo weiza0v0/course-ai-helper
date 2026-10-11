@@ -11,8 +11,6 @@ export const id = 'zhihuishu';
 export const name = '智慧树';
 export const mode = 'cdp';
 export const platformHint = '用「启动带调试浏览器.bat」打开的浏览器里登录，进入作业答题界面';
-export const helperFile = 'console/helper.js';
-export const helperHint = '本模式不粘脚本：助手直连浏览器只读读取（题目在闭合 Shadow DOM 里，页面脚本读不到）';
 export const allowOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/[a-z0-9-]*\.?zhihuishu\.com$/;
 // 只读模式：不点击 / 不填答 / 不提交
 export const readOnly = true;
