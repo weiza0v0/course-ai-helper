@@ -511,6 +511,52 @@ async function selftest() {
     cut.length < 2100 && cut.includes('已截断') && cut.startsWith('x'.repeat(100)));
   t('工具结果截断：短结果原样返回', truncateToolResult('abc', 2000) === 'abc');
 
+  // 2d. 联网工具的正确性（离线可验证的部分）
+  const {stripTags, relevantEnough, looksBlocked} = await import('./lib/tools.mjs');
+  // ★ 回归防护：stripTags 原来只把 [ \t\u00a0]+ 压成单空格，
+  //   "<div></div><div></div>" → "\n \n \n"，而 \n{3,} 匹配不到（中间夹空格），
+  //   于是正文里 18%~24% 是纯空白行，白吃掉 web_result_chars 的截断窗口。
+  //   实测 gushiwen 的《文心雕龙》目录里 needle「序志」在 1285 字符处 → 被 cap=1200 切掉、模型永远看不到。
+  const padded = stripTags('<div>甲</div><div></div><div></div><div>乙</div><div>   </div><div>丙</div>');
+  t('网页去标签：空 div 不留空白行（否则白吃截断窗口）',
+    padded === '甲\n乙\n丙', JSON.stringify(padded));
+  t('网页去标签：连续空行被折成一个',
+    !/\n\s*\n/.test(stripTags('<p>甲</p><div></div><div></div><div>乙</div>')));
+  // ★ 相关性闸门：Bing 对多词查询会退化成"查询第一个字的字典页"（实测见 lib/tools.mjs 注释）。
+  //   没有闸门的话垃圾会当结果返回，而且会因为"有结果"而让 DuckDuckGo 兜底永不触发。
+  const junk = [
+    {title: '大 （汉语文字）_百度百科', snippet: '大（拼音：dà、dài、tài）是汉语一级通用规范汉字'},
+    {title: '大 的意思, 大 的解释', snippet: '大的部首是大部'},
+  ];
+  t('搜索相关性闸门：挡住"首字字典页"式降级结果',
+    relevantEnough('大历十才子 五言长城 刘长卿', junk) === false);
+  t('搜索相关性闸门：正常结果放行',
+    relevantEnough('大历十才子 五言长城 刘长卿', [{title: '刘长卿被誉为五言长城', snippet: '唐代诗人刘长卿自诩为五言长城'}]) === true);
+  t('搜索相关性闸门：整串命中（模型把整句当查询）放行',
+    relevantEnough('五言长城是谁', [{title: '五言长城是谁', snippet: '即刘长卿'}]) === true);
+  t('搜索相关性闸门：空结果不放行', relevantEnough('任意查询', []) === false);
+  // ★ 打分选最优：只判"有没有任一词命中"不够 —— 实测查「量子纠缠 是什么 通俗解释」时，
+  //   Bing 那份整体跑题的结果里第 4 条摘要偶然出现"量子纠缠"就足以过关。
+  const {relevanceScore} = await import('./lib/tools.mjs');
+  t('搜索打分：跑题结果 0 分', relevanceScore('大历十才子 五言长城 刘长卿', [
+    {title: '大 （汉语文字）_百度百科', snippet: '大的部首是大部'},
+  ]) === 0);
+  t('搜索打分：命中越多分越高（标题命中再加权）', (() => {
+    const q = '司马迁 史记 体例 纪传体';
+    const weak = relevanceScore(q, [{title: '某随笔', snippet: '司马迁 只是《史记》的编撰者'}]);
+    const strong = relevanceScore(q, [{title: '史记（司马迁所著的纪传体史书）', snippet: '《史记》分本纪、表、书、世家、列传五部分'}]);
+    return strong > weak && weak > 0;
+  })());
+  // 回归防护：书名号会把明明命中的结果判成不相关（"《春秋》" vs 结果里的"春秋"）
+  t('搜索打分：书名号/引号不参与匹配',
+    relevanceScore('《春秋》 编年体 史书', [{title: '春秋（儒家典籍）', snippet: '中国现存最早的编年体史书'}]) >= 2.5);
+  // ★ 拦截页必须报错而不是当正文：原来 403 时把"百度安全验证"6 个字喂给模型，
+  //   模型看不出这是失败，容易当成"没查到"的证据继续推理。
+  t('抓取拦截识别：百度安全验证 403 → 判定为墙',
+    looksBlocked(403, '百度安全验证', '百度安全验证') === true);
+  t('抓取拦截识别：正常长正文不误判',
+    looksBlocked(200, '文心雕龙 - 维基百科', '《文心雕龙》是南朝刘勰创作的文学理论著作，'.repeat(20)) === false);
+
   t('工具裁剪：文史题只发 calc+联网，数学题发全部',
     (() => {
       const hist = {stem: '沙盘推演实践教学有哪几个环节组成', options: [{text: '战役还原环节'}]};
