@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-106%20math%20%2B%2035%20app-success.svg)](#测试)
+[![Tests](https://img.shields.io/badge/tests-106%20math%20%2B%2085%20app-success.svg)](#测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **永不自动交卷** —— 代码里没有任何提交动作。
@@ -23,6 +23,45 @@
 - 题目是图片也能做（多模态）
 - 涉及计算**必须调工具复核**（自研零依赖数学引擎，106 项与 numpy/scipy/sympy 交叉验证）
 - **中国大学MOOC / 超星**：答案自动勾回页面；**智慧树**：只读，答案打在终端
+
+## 亮点
+
+**1. 永不交卷。** 页面上所有跟 `submit` 有关的代码只做三件事：找到交卷按钮 → **圈红** → 滚到它，
+然后提醒你"检查无误后自己点"。**没有一处对它 `.click()`。** 可自查：
+
+```bash
+grep -rn "\.click()" platforms/*/console/*.js   # 只命中：选项单选框、以及"确定/关闭"弹窗
+grep -rn "submitBtn\.click\|btn\.click()" platforms/ lib/ cli.mjs   # 无输出
+```
+
+**2. 零依赖，解压就能跑。** `package.json` 的 `dependencies` 为空，自带便携 `node.exe`：
+学生不用装 Node、不用 `npm install`，双击 `启动.bat` 就行。连数学引擎也是自研的，不调任何外部计算服务。
+
+**3. 三个平台，两套完全不同的打法。** MOOC/超星是"把助手脚本注入页面"——
+读题、勾选项都由**页面自己的 JS** 完成（勾的是选项，且按平台限流节奏间隔 400ms）。
+智慧树则**完全不动页面**：它的反作弊会检查 `isTrusted=false`（我们实测被标记过一次），
+所以走 CDP **只读**读卷（能穿透闭合 Shadow DOM 拿到题干），答案只打在终端。
+
+**4. 计算不让模型心算。** `matrix` / `calculus` / `stats` / `calc` 全部本地实算，
+**106 项对照 numpy / scipy / sympy** 交叉验证；判据是"凡是要下结论的数值都必须过工具"。
+
+**5. 联网这块是踩过坑才做实的**（三条都是实测结论，不是设计想象）：
+
+- **相关性打分选后端**：实测 Bing 对多词查询会返回"查询第一个字的字典页"
+  （`大历十才子 五言长城 刘长卿` → 5 条全是「大」_百度百科）。所以判据不能是"有没有结果"，
+  只能是"结果跟查询有没有关系"；跑题就换下一个引擎。
+- **反爬用真实浏览器兜底**：百度百科对程序化抓取恒 403，改用它**已经开着的** Chrome
+  开一个**后台**标签读正文（实测不改变答题页的 `visibilityState` / 焦点），读完就关。
+- **按相关性挑段落，而不是砍开头**：1200 字的窗口要塞进 1 万字的网页。
+  让模型传题干关键词、按命中挑句子 —— 实测「考文垂」在头部截断下看不见，按相关性挑就命中。
+
+**6. 成本是量出来再优化的。** 实测**输出 token 占实际花费约 78%**
+（输出 ¥8/百万 vs 缓存输入 ¥0.04/百万），于是**文史题自动降到 low、数理题才用 max**：
+同一组题 39.2s → 10.3s、输出 3595 → 768 tokens。请求结构也刻意做成"稳定前缀在前"，
+让 DeepSeek 的自动缓存命中（实测命中率 80%~94%）。跑完直接报钱。
+
+**7. 一条命令自检，离线可复现。** `node cli.mjs --selftest` 有 85 项，不连浏览器、不调模型，
+还包含几条**源码级安全红线**（"绝不退回前台标签""绝不生成 auto_submit"这类）。
 
 ## 固定流程（五步）
 
@@ -98,29 +137,41 @@ node cli.mjs --selftest        # 离线自检（35 项）
 
 ## 花费
 
-实测：**MOOC 数学 10 题 ≈ ¥0.07**；**智慧树 27 题（大量联网）≈ ¥0.6**。
-贵在"每次请求都要重发固定前缀"（工具 schema + 系统提示）。已做的优化：
+`deepseek-flash` 高峰价（元/百万 token）：未命中 **2** / 命中 **0.04** / 输出 **8**。
+按真实用量实测：
+
+| 场景 | 每题 | 整卷 |
+| --- | --- | --- |
+| 文史概念题（不用工具） | ≈¥0.003 | 3 题 ≈¥0.009 |
+| 文史题 + 联网查证 | ≈¥0.005 | 3 题 ≈¥0.016 |
+| 理工计算题（matrix / calc） | ≈¥0.009 | 10 题 ≈¥0.09 |
+| 智慧树 27 题（文史 + 联网） | —— | ≈¥0.14 |
+
+> 空闲时段（工作日 9-12、14-18 点之外，含周末全天）单价减半 —— **晚上做题基本按半价**。
+
+**关键：钱花在哪。** 输入有缓存几乎免费（命中 5%），**输出占 ~78%** ——
+因为输出 ¥8/百万 是缓存输入 ¥0.04/百万 的 200 倍，而思考 token 全按输出价计费。
+所以最有效的省钱开关是思考强度，不是工具集：
 
 | 配置 | 默认 | 作用 |
 | --- | --- | --- |
-| `tool_mode` | `all` | 默认每次发全部 6 个工具（省心）。设成 `auto` 会按卷子裁掉用不到的数理工具，纯文史卷每次省 ~2600 tokens —— 但多出来的 schema 落在共享前缀里、基本走缓存命中价，省得有限，还可能误判|
-| `max_web_calls` | 3 | 每题最多联网几次；用完后工具回"请直接作答" |
+| `reasoning_effort` | `max` | **数理题**的思考强度 |
+| `reasoning_effort_auto` | `true` | **文史题自动降档**（最大的省钱开关，见上）|
+| `reasoning_effort_humanities` | `low` | 文史题用哪档；填 `off` 完全不思考最省 |
+| `max_web_calls` | 3 | 每题最多搜几次（一次最多带 4 条查询，查询不额外计费）|
+| `max_web_fetches` | 2 | 每题最多打开几个网页（和搜索分开算：搜索是"找"，抓取是"读已决定要读的那篇"）|
 | `web_result_chars` | 1200 | 网页结果进对话前的字符上限（它会在后续每轮重发）|
 | `max_tool_rounds` | 7 | 每多一轮，前面内容全部重发一次 |
-| `reasoning_effort` | `max` | 降到 `high` 明显降价 |
-| `price_in` / `price_out` | 0 | 填自己的单价（元/百万 token）就会估算金额 |
-| `price_cache_in` | 0 | 缓存命中的输入价；留 0 = 按 `price_in` 的 1/10 |
+| `max_tool_result_chars` | 2000 | 普通工具结果上限 |
+| `tool_mode` | `all` | 默认全发 6 个工具。设 `auto` 按卷裁工具（省得有限：多出的 schema 落在共享前缀里、走缓存命中价）|
+| `price_in` / `price_out` / `price_cache_in` | 2 / 8 / 0.04 | 已按高峰价填好，跑完会估算金额 |
 
-每次运行结束报真实用量，并存日志到 `data/logs/run-*.log`：
+每次运行结束报真实用量并写日志到 `data/logs/run-*.log`：
 
 ```
-  ✓ 10/10 已解题 · 耗时 28.0s · 工具调用 21 次
-    💰 用量：输入 41.2k（缓存命中 30.1k · 73%）· 输出 8.8k tokens（20 次请求，联网 6 次）· 估算 ¥0.11
+  ✓ 3/3 已解题 · 耗时 10.3s · 工具调用 2 次
+    💰 用量：输入 17.1k（缓存命中 12.7k · 74%）· 输出 768 tokens（5 次请求，搜索 2 条查询 / 抓网页 0 次）· 本卷约 ¥0.016
 ```
-
-> 输入分「缓存命中 / 未命中」两部分计费（DeepSeek 自动上下文缓存，命中价约 1/10）。
-> 我们请求结构是"稳定前缀在前"，所以同一题的后续轮次、以及各题共用的
-> 系统提示 + 工具 schema 都能命中 —— 命中率会直接打在终端上。
 
 ## 配置
 
@@ -130,7 +181,7 @@ node cli.mjs --selftest        # 离线自检（35 项）
 [model]
 api_key = ""                  # 必填
 model = "deepseek-flash"      # 必须支持图片输入
-reasoning_effort = "max"      # 数学题别关
+reasoning_effort = "max"      # 数理题别关；文史题会自动降档（见 花费）
 
 [app]
 fill_interval_ms = 400        # 两次勾选的间隔（勾一次会发一次写请求，太快会被限流）
@@ -144,7 +195,7 @@ browser = ""
 ## 测试
 
 ```bash
-node cli.mjs --selftest      # 35 项：平台注册表 / 桥接层 / 工具裁剪 / 答案单 / 工具实算
+node cli.mjs --selftest      # 85 项：平台注册表 / 桥接层 / 工具裁剪 / 答案单 / 联网判定 / 安全红线
 node test/math-test.mjs      # 106 项，对照 numpy / scipy / sympy
 node test/real-test.mjs --paper examples/questions.json --expect examples/expected.json
 ```
