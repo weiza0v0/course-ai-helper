@@ -504,7 +504,7 @@ async function selftest() {
     guardOut.split('\n')[1]);
 
   // 2c. 工具结果截断（省钱关键：超长结果会在后续每一轮被重发）
-  const {truncateToolResult, pickToolsForQuestion} = await import('./lib/agent.mjs');
+  const {truncateToolResult, pickToolsForQuestion, pickToolsForPaper: await_import_paper} = await import('./lib/agent.mjs');
   const long = 'x'.repeat(50000);
   const cut = truncateToolResult(long, 2000);
   t('工具结果截断：50000 → 2000 字符 + 截断说明',
@@ -517,6 +517,15 @@ async function selftest() {
       const math = {stem: '求矩阵 A 的行列式 det(A)', options: [{text: '-2'}]};
       return pickToolsForQuestion(hist).length === 3 && pickToolsForQuestion(math).length === 6
         && pickToolsForQuestion(hist, 'all').length === 6;
+    })());
+  // ★ 整卷固定工具集：DeepSeek 缓存要求"完整匹配前缀单元"，
+  //   逐题切换会让共享前缀 A 变形，永远命中不了（官方文档 Example 2）
+  t('工具裁剪：整卷只定一次（纯文史 3 个 / 混合卷 6 个）',
+    (() => {
+      const pickToolsForPaper = await_import_paper;
+      const hist = [{stem: '沙盘推演有哪几个环节'}, {stem: '下列说法正确的有'}];
+      const mixed = [...hist, {stem: '求矩阵 A 的行列式 det(A)'}];
+      return pickToolsForPaper(hist).length === 3 && pickToolsForPaper(mixed).length === 6;
     })());
 
   // 3. 答案单
