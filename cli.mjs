@@ -558,7 +558,7 @@ async function selftest() {
     looksBlocked(200, '文心雕龙 - 维基百科', '《文心雕龙》是南朝刘勰创作的文学理论著作，'.repeat(20)) === false);
   // ★ 浏览器兜底：直连被反爬挡住/连不上时，改用真实 Chrome 开后台标签抓。
   //   用 127.0.0.1:9（连接必然被拒）做离线触发点，不依赖网络、不真开浏览器。
-  const {webFetch, setBrowserFetcher, hasBrowserFetcher} = await import('./lib/tools.mjs');
+  const {webFetch, setBrowserFetcher, hasBrowserFetcher, needsBrowser, isRedirectShell} = await import('./lib/tools.mjs');
   const noNet = 'http://127.0.0.1:9/';
   t('抓取兜底：没接浏览器时照常报错', (await webFetch({url: noNet})).includes('抓取失败'));
   t('抓取兜底：未注入时 hasBrowserFetcher 为 false', hasBrowserFetcher() === false);
@@ -572,6 +572,17 @@ async function selftest() {
   t('抓取兜底：抓回来仍是验证页 → 不当正文', (await webFetch({url: noNet})).includes('抓取失败'));
   setBrowserFetcher(null);
   t('抓取兜底：可以摘掉（不用浏览器时零影响）', hasBrowserFetcher() === false);
+  // ★ 搜索引擎的"跳转链接"（搜狗/360）是 JS 跳转壳页：Node 直连拿到的是 HTTP 200 + 脚本，
+  //   看着像成功其实是废的。实测经真实浏览器能正常跳到网易/百度文库等真页面。
+  t('抓取判定：搜狗跳转链接要走浏览器',
+    isRedirectShell('https://www.sogou.com/link?url=abc') === true
+    && needsBrowser(200, '', '一段脚本', 'https://www.sogou.com/link?url=abc') === true);
+  t('抓取判定：360 跳转链接要走浏览器',
+    needsBrowser(200, '', '', 'https://www.so.com/link?m=xyz') === true);
+  t('抓取判定：正常页面不走浏览器（否则每题都白白多开标签）',
+    needsBrowser(200, '文心雕龙 - 维基百科', '《文心雕龙》共十卷五十篇。'.repeat(20), 'https://zh.wikipedia.org/wiki/x') === false);
+  t('抓取判定：空壳页（无标题+极短正文）走浏览器',
+    needsBrowser(200, '', 'Loading...', 'https://example.com/x') === true);
 
   t('工具裁剪：文史题只发 calc+联网，数学题发全部',
     (() => {
