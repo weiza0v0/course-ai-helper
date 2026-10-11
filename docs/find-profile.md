@@ -1,132 +1,94 @@
-# 怎么找到浏览器的 profile（登录态）位置
+# 浏览器 profile（登录态）说明
 
-> **多数情况下你不需要看这篇。** 工具会自己找；找不到时会**问你一次**并把答案记住。
-> 这篇是给你"想手动指定"或"自动找偏了"的时候看的。
-
----
-
-## 一、为什么需要填这个
-
-浏览器把「登录态」存在一个目录里（Chromium 系叫 **user data dir**，里面按 profile 分：
-`Default`、`Profile 1`、`Profile 2`…）。工具启动浏览器时会传：
-
-```
---user-data-dir=<你填的目录>
-```
-
-传对了 → 打开就是你**已经登录**的账号，不用扫码/输密码。
-传错了 / 没传 → 打开的是一个**全新空白 profile**，什么都得重新登。
+> **多数情况你不需要看这篇。** 记住一句话就够：
+> **第一次跑的时候在弹出的窗口里登录一次，之后就不用再登了。**
 
 ---
 
-## 二、最靠谱的找法：问浏览器自己
+## 一、为什么不能直接用你日常 Chrome 的登录态
 
-1. 打开 Chrome（或 Edge），地址栏输入：
+[Chrome 136 起](https://developer.chrome.com/blog/remote-debugging-port)，Google 做了一项安全加固：
 
-   ```
-   chrome://version          ← Chrome
-   edge://version            ← Edge
-   ```
-   > 注意：`chrome://` 开头的地址**不能点链接跳转**，要手动敲进地址栏。
+> 如果尝试调试**默认的 Chrome 数据目录**，`--remote-debugging-port` /
+> `--remote-debugging-pipe` **将不再被遵循**。这两个开关必须与 `--user-data-dir`
+> 搭配、指向**非标准目录**。
 
-2. 在页面上找这一行：
+背景：自从 Chrome 上了「应用绑定加密」，攻击者转而去用远程调试端口偷 cookie，
+所以 Google 直接把"调试默认目录"这条路封了。
 
-   | 界面语言 | 字段名 |
-   | --- | --- |
-   | 中文 | **配置文件路径** |
-   | English | **Profile Path** |
+**后果**：想拿你日常那个已登录的 profile 开调试端口 → Chrome 直接忽略参数 →
+工具连不上。这不是本工具的 bug，是平台的安全设计，我们没有（也不打算）绕过它。
 
-3. 你会看到类似这样的一行：
+所以工具**固定用一个非默认目录**：
 
-   ```
-   C:\Users\你的用户名\AppData\Local\Google\Chrome\User Data\Default
-   ```
+| 系统 | 助手专用 profile |
+| --- | --- |
+| Windows | `%USERPROFILE%\.course-ai-helper-profile` |
+| macOS / Linux | `~/.course-ai-helper-profile` |
 
-4. **把这一整行复制走就行** —— 工具会自动去掉末尾的 `\Default`（因为
-   `--user-data-dir` 要的是上一级 `…\User Data`）。
-   如果你自己手填配置，就填**去掉 `\Default` 的那一级**。
-
-   ```
-   要填的： C:\Users\你\AppData\Local\Google\Chrome\User Data
-   不要填： C:\Users\你\AppData\Local\Google\Chrome\User Data\Default
-   ```
-
-   > 为什么要去掉？`--user-data-dir` 指的是"装 profile 的那层目录"。
-   > 如果指到 `Default` 里面，Chrome 会在它里面**再建一个** `Default`，
-   > 等于一个全新的 profile —— 照样要重新登录。
+这个目录是**持久的**：登录一次，之后一直有效。
 
 ---
 
-## 三、填到哪里
+## 二、想换一个目录？
 
-**方式 A：让工具问你**（推荐）
-
-第一次跑的时候如果没找到，它会问：
-
-```
-  ⚠ 找到了浏览器，但没找到它的 profile（登录态）目录
-    去哪找？浏览器地址栏输入  chrome://version  （Edge 是 edge://version）
-    看「配置文件路径 / Profile Path」，把那一行贴进来即可（会自动去掉末尾的 \Default）
-  浏览器配置文件路径（直接回车=用助手专用 profile）: 
-```
-
-贴上 → 它会把路径写进 `config.toml`，以后不再问。
-
-**方式 B：直接写在 `config.toml` 里**
+改 `config.toml`（**用单引号**，TOML 字面量字符串，Windows 反斜杠不用转义）：
 
 ```toml
 [cdp]
-# 用单引号！TOML 字面量字符串，Windows 反斜杠不用转义
-profile = 'C:\Users\你\AppData\Local\Google\Chrome\User Data'
+profile = 'D:\course-ai-helper-profile'
 ```
 
-**方式 C：命令行临时指定**
+或者命令行临时指定：
 
 ```bash
-node cli.mjs mooc "<链接>" --profile "C:\Users\你\AppData\Local\Google\Chrome\User Data"
+node cli.mjs mooc --profile "D:\course-ai-helper-profile"
 ```
+
+**规则就一条：不能指向浏览器默认的数据目录。**
+
+```
+❌ C:\Users\你\AppData\Local\Google\Chrome\User Data        ← 默认目录，Chrome 会忽略调试端口
+✅ D:\course-ai-helper-profile                                   ← 任意非默认目录
+```
+
+> 填了默认目录工具也会提示你。想确认当前用哪个：`node cli.mjs --doctor`。
 
 ---
 
-## 四、各系统的常见位置（自动找就是查这些）
+## 三、如果你手边只有「配置文件路径」
 
-| 系统 | 位置 |
-| --- | --- |
-| Windows | `%LOCALAPPDATA%\Google\Chrome\User Data` |
-| Windows（Edge） | `%LOCALAPPDATA%\Microsoft\Edge\User Data` |
-| macOS | `~/Library/Application Support/Google/Chrome` |
-| Linux | `~/.config/google-chrome` |
-
-**便携版 / 绿色版**：一般在 **exe 同级或上级** 的 `User Data`：
+有时候你会从别处拿到一个 profile 路径（比如 `chrome://version` 里的「配置文件路径」）：
 
 ```
-D:\ChromePortable\
-├─ chrome.exe
-└─ User Data\          ← 就是这个
-   ├─ Default\
-   └─ Local State
+C:\Users\你\AppData\Local\Google\Chrome\User Data\Default
 ```
 
-工具已经会自动往这些地方看；实在找不到才需要你手填。
+填进去也没关系 —— 工具会**自动上退一级**到 `…\User Data`，并打印提示。
+（`--user-data-dir` 要的是装 profile 的那层目录；指到 `Default` 里面，Chrome 会在它里面
+再建一个 `Default` = 全新 profile。）
+
+不过注意：上退之后那就是**默认目录**了，仍然会被 Chrome 136+ 拒绝 —— 所以你**真正需要的
+是一个新的空目录**，不是日常那个。
 
 ---
 
-## 五、两个前提 / 注意事项
+## 四、常见疑问
 
-1. **浏览器要完全退出**。运行中的浏览器会锁住 profile，而且它启动时没开调试端口，
-   工具也连不上去。→ 任务栏关掉，确认没有残留进程（任务管理器里搜 `chrome`）。
+**Q：那我日常 Chrome 的登录就完全用不上了？**
+A：用不上。第一次在新窗口登录一次即可，之后都在。想少登几个平台，就在**同一个助手 profile**
+里把几个平台都登一遍（profile 是所有平台共用的）。
 
-2. **这会使用你真实的浏览器登录态**。工具的做法是把 profile 目录**交给 Chrome 自己**去用，
-   **不会去读 profile 里的任何文件、也不解密 cookie**（所以 Chrome 127+ 的
-   App-Bound Encryption 对它没有影响）。
-   但你要知道：跑这个工具时，它可以访问你已登录的会话 —— 所以你**自己**跑、跑**自己的**账号。
+**Q：登录态会不会丢？**
+A：不会。profile 是个普通目录，Chrome 把 cookie 写在里面。除非你手动删掉它。
 
----
+**Q：能不能用 Chrome 的「多用户/Profile 1」？**
+A：不能直接指过去（一样是默认数据目录下的）。要么用助手专用目录，要么 `[cdp] profile`
+指一个全新的非默认目录。
 
-## 六、不想用真实 profile？
+**Q：有没有办法用上日常登录态？**
+A：Chromium 官方的 **Chrome for Testing** 保留了旧行为，仍可对默认目录开调试端口。
+把 `[cdp] browser` 指到它就行 —— 但那是你自己要接受的风险，本工具不默认这么做。
 
-那就让它新建一个专用的：`config.toml` 里把 `profile` 留空、并保证你的浏览器**正在运行**
-（这样工具没法借用），它会退回 `~/.course-ai-helper-profile`（Windows 是
-`%USERPROFILE%\.course-ai-helper-profile`）。
-
-在那个窗口里**登录一次**，之后这个 profile 会一直保留，不用重复登录。
+**Q：怎么知道现在用的是哪个 profile？**
+A：`node cli.mjs --doctor`，里面会写清楚"将使用"哪一个，以及那个目录是不是已经登录过。

@@ -231,6 +231,23 @@ function helperProfileDir() {
  *   2) 日常浏览器**没在跑** → 直接用它的 profile（已登录，零登录）
  *   3) 否则用助手专用 profile（登录一次，之后一直记得）
  */
+/**
+ * 选一套 profile 给浏览器用。
+ *
+ * ★ 为什么不用你日常的 Chrome profile：
+ *   Chrome 136 起（见 https://developer.chrome.com/blog/remote-debugging-port ），
+ *   对**默认数据目录**使用 --remote-debugging-port / --remote-debugging-pipe 会被**直接忽略**。
+ *   也就是说"借用你日常登录态"从设计上就不可行了 —— 强行这么干只会得到一个
+ *   没有调试端口的浏览器（工具连不上去）。这是 Google 的安全加固，我们尊重它。
+ *
+ *   所以我们固定用一个**非默认目录**（助手专用 profile）：登录一次，之后一直有效。
+ */
+const isDefaultProfileDir = d => {
+  const {dir} = normalizeProfileDir(d);
+  const def = findDefaultProfile('');
+  return !!def.dir && path.resolve(dir).toLowerCase() === path.resolve(def.dir).toLowerCase();
+};
+
 async function pickProfile(explicit, exePath, {interactive = true} = {}) {
   if (explicit) {
     const {dir, adjusted} = normalizeProfileDir(explicit);
@@ -238,58 +255,15 @@ async function pickProfile(explicit, exePath, {interactive = true} = {}) {
       info(c(`    路径已自动上退一级：${explicit}`, 'dim'));
       info(c(`                  →  ${dir}   （--user-data-dir 要的是 User Data，不是里面的 Default）`, 'dim'));
     }
-    return {dir, why: '指定的 profile（--profile / [cdp] profile）', real: false};
-  }
-  const running = await browserRunning();
-  const {dir: def, name: defName, checked} = findDefaultProfile(exePath);
-  if (def && !running) {
-    return {dir: def, why: `你日常的 ${defName} 登录态 —— 通常不用再登录`, real: true};
-  }
-  if (!def) {
-    // 填了浏览器路径也确定不了 profile（那是两回事）—— 直接问一次，问到了就记住
-    if (interactive && process.stdin.isTTY) {
-      info('');
-      warn('找到了浏览器，但没找到它的 profile（登录态）目录');
-      info(c('    填 browser 只是告诉用哪个程序；用哪套登录态是另一件事（--user-data-dir）', 'dim'));
-      info(c('    便携版/绿色版一般在 exe 同级或上级的 User Data；不确定就回车用助手 profile（登录一次）', 'dim'));
-      info(c('    去哪找？浏览器地址栏输入  chrome://version  （Edge 是 edge://version）', 'dim'));
-      info(c('    看「配置文件路径 / Profile Path」，把那一行贴进来即可（会自动去掉末尾的 \\Default）', 'dim'));
-      const p = await ask('  浏览器配置文件路径（直接回车=用助手专用 profile）: ');
-      if (p) {
-        const {dir, adjusted} = normalizeProfileDir(p);
-        if (adjusted && dir !== p) info(c(`    已自动上退一级 → ${dir}`, 'dim'));
-        if (fs.existsSync(dir)) {
-          try { saveCdpSetting(__dirname, process.env.CONFIG_FILE || '', 'profile', dir); ok('已记住：[cdp] profile = ' + dir); } catch {}
-          return {dir, why: '你填的 profile（[cdp] profile）', real: false};
-        }
-        warn('这个目录不存在，改用助手专用 profile');
-      }
+    if (isDefaultProfileDir(dir)) {
+      warn('这是你日常 Chrome 的默认数据目录 —— Chrome 136+ 不允许对它开调试端口，工具会连不上');
+      info(c('    建议改用助手专用 profile（登录一次会记住）：把 [cdp] profile 留空', 'dim'));
     }
-    return {dir: helperProfileDir(), why: '没找到日常浏览器的 profile（下面列了查过的位置），用助手专用 profile（登录一次会记住）', real: false, checked};
+    return {dir, why: '指定的 profile（--profile / [cdp] profile）'};
   }
-  if (running) {
-    const name = running === 'edge' ? 'Edge' : 'Chrome';
-    // ★ 不再"悄悄换掉" —— 那正是"为什么依旧没登录"的根源。明确问一次。
-    if (def && interactive && process.stdin.isTTY) {
-      warn(`检测到你的 ${name} 正在运行 —— 它锁着自己的 profile，现在**借不到你的登录态**`);
-      info(c('    1) 完全退出 ' + name + '（任务栏关闭，确认没有残留进程），然后按回车 → 用你日常的登录态，零登录', 'dim'));
-      info(c('    2) 输入 h 再回车 → 用助手专用 profile（现在就能用，登录一次会一直记住）', 'dim'));
-      const ans = await ask('  选择 [回车 = 等我去关浏览器 / h = 用助手 profile]: ');
-      if (String(ans).trim().toLowerCase() !== 'h') {
-        info(c('    等 ' + name + ' 退出…', 'dim'));
-        for (let i = 0; i < 90; i++) {
-          await sleep(1000);
-          if (!(await browserRunning())) { ok(`${name} 已退出，改用你日常的登录态（零登录）`); return {dir: def, why: `${name} 的登录态`, real: true}; }
-        }
-        warn('等了 90 秒还没退出，这次先用助手专用 profile');
-      }
-      return {dir: helperProfileDir(), why: '你选的助手专用 profile（登录一次会记住）', real: false, checked};
-    }
-    warn(`检测到你的 ${name} 正在运行 —— 借不到它的登录态，改用助手专用 profile`)
-    info(c('    想要零登录：先把 ' + name + ' 完全退出再跑一次', 'dim'));
-    return {dir: helperProfileDir(), why: `助手专用 profile（你的 ${name} 正在运行，没法借用它的登录态；登录一次会记住）`, real: false};
-  }
-  return {dir: helperProfileDir(), why: '助手专用 profile（登录一次就会记住）', real: false};
+  const helper = helperProfileDir();
+  const first = !fs.existsSync(path.join(helper, 'Default'));
+  return {dir: helper, why: '助手专用 profile（非默认目录 —— Chrome 136+ 只允许对非默认目录开调试端口）', first};
 }
 
 /** 找不到日常 profile 时，把查过的位置打印出来（用户可以用 --profile 手动指） */
@@ -381,8 +355,7 @@ async function ensureBrowserSmart(port, startUrl, CFG, opts) {
   const br = await ensureBrowser(port, startUrl, prof.dir, exe);
   info(c(`    profile：${br.profile || prof.dir}`, 'dim'));
   info(c(`    ${prof.why}`, 'dim'));
-  explainProfileSearch(prof);
-  return br;
+  return {...br, firstTime: !!prof.first};
 }
 
 /** 浏览器调试端口连不上就用它拉一个 Chrome/Edge（带 --remote-debugging-port） */
@@ -412,7 +385,7 @@ async function ensureBrowser(port, url, profileDir, exePath) {
     }
     return null;
   };
-  let tabs = await waitPort(12);
+  let tabs = await waitPort(40);          // 冷启动 + 恢复标签可能较慢，给足时间
   if (!tabs && launchErr) {
     bad(`启动不了浏览器（${exe}）：${launchErr.message}`);
     info('  请手动启动一个带调试端口的浏览器，然后重跑：');
@@ -655,22 +628,28 @@ async function doctor(platforms, CFG, opts) {
     for (const c of auto) if (c) info(c(`      ${fs.existsSync(c) ? '✓' : '·'} ${c}`, 'dim'));
   }
 
-  // 4) profile
+  // 4) profile（登录态）
   console.log();
   const profCfg = opts.profile || CFG.cdp?.profile || '';
   info('登录态（profile）：');
-  info(`    [cdp] profile = ${profCfg ? `'${profCfg}'` : '(空 → 自动找)'}`);
+  const {dir: realDir, name: realName} = findDefaultProfile(exe);
+  info(c(`    你日常的浏览器 profile：${realDir ? `${realName} → ${realDir}` : '（没找到）'}`, 'dim'));
+  info(c('    ⚠ Chrome 136+ 对**默认数据目录**会忽略 --remote-debugging-port（Google 的安全加固），', 'yellow'));
+  info(c('      所以不能借用你日常的登录态 —— 这是平台限制，不是本工具的 bug', 'yellow'));
   if (profCfg) {
     const {dir, adjusted} = normalizeProfileDir(profCfg);
-    fs.existsSync(dir) ? ok(`    将使用：${dir}${adjusted ? '  （已自动上退一级）' : ''}`)
-                       : bad(`    这个目录不存在：${dir}`);
+    const bad = isDefaultProfileDir(dir);
+    if (!fs.existsSync(dir)) bad(`    [cdp] profile 目录不存在：${dir}`);
+    else if (bad) bad(`    [cdp] profile 指向默认目录，Chrome 会忽略调试端口：${dir}`);
+    else ok(`    将使用（[cdp] profile）：${dir}${adjusted ? '  （已自动上退一级）' : ''}`);
   } else {
-    const {dir, name, checked} = findDefaultProfile(exe);
-    for (const chk of checked) info(c(`      ${chk.exists ? '✓' : '·'} ${String(chk.name).padEnd(14)} ${chk.dir}`, 'dim'));
-    if (dir && !running) ok(`    将使用：${name} → ${dir}   （借你日常登录态，零登录）`);
-    else if (dir && running) warn(`    找到了 ${name}（${dir}），但浏览器正在运行 → 现在**借不到**，会退回助手专用 profile`);
-    else warn('    没找到日常浏览器的 profile → 会退回助手专用 profile（或问你要路径）');
+    const helper = helperProfileDir();
+    const inited = fs.existsSync(path.join(helper, 'Default'));
+    ok(`    将使用（助手专用 profile）：${helper}`);
+    info(c(`      ${inited ? '✅ 已经用过（里面登录过的话会保留）' : '🆕 还不存在 —— 第一次跑会新建，需要登录一次'}`, 'dim'));
+    info(c('      登录一次之后一直有效（profile 是持久目录，不会每次清空）', 'dim'));
   }
+
   console.log();
   extInfo();
   console.log();
@@ -679,9 +658,9 @@ async function doctor(platforms, CFG, opts) {
 function extInfo() {
   const helper = helperProfileDir();
   info('助手专用 profile：' + helper);
-  info(c(`    ${fs.existsSync(helper) ? '存在（里面登录过的话会保留）' : '还不存在（第一次用会新建）'}`, 'dim'));
-  info(c('    ⚠ 它和你日常 Chrome 是两套登录态：如果你希望"用日常登录态"，', 'dim'));
-  info(c('      需要先把 Chrome 完全退出，再跑一次（工具会自动改用日常 profile）', 'dim'));
+  info(c(`    ${fs.existsSync(path.join(helper, 'Default')) ? '已经用过（登录态保留在里面）' : '还不存在 —— 第一次跑会新建，需要登录一次'}`, 'dim'));
+  info(c('    想换目录：config.toml 的 [cdp] profile，或 --profile "<非默认 User Data 目录>"', 'dim'));
+  info(c('    注意：不能指向默认数据目录（Chrome 136+ 会忽略调试端口）', 'dim'));
 }
 
 // ------------------------------------------------------------------ 主流程
@@ -758,6 +737,12 @@ async function main() {
   const startUrl = url || platform.homeUrl || 'about:blank';   // 不给链接就开平台首页，别开空白页
   const br = await ensureBrowserSmart(port, startUrl, CFG, opts);
   if (br.launched) ok(`浏览器已启动（端口 ${port}）`);
+  if (br.firstTime) {
+    info('');
+    warn('第一次用：这个窗口的浏览器是**全新 profile**，请在窗口里登录一次');
+    info(c('    登录态会一直保存在这个 profile 里，以后不用再登', 'dim'));
+    info('');
+  }
   let tab = null;
   if (url) {
     tab = await resolveTab(port, url, {forceNew: flags.has('new')});

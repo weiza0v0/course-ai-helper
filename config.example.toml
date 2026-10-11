@@ -45,11 +45,12 @@ limit_backoff_ms = 3000
 # macOS  例： browser = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 # Linux  例： browser = '/usr/bin/google-chrome'
 browser = ""
-# 用哪套登录态（--user-data-dir）。注意：填 browser 只是"用哪个程序"，
-# 不等同于确定了 profile —— 便携版一般在 exe 同级/上级的 User Data。
-#   留空（推荐）= 自动：优先跟着 browser 的家族和 exe 位置找；
-#                 你的浏览器没在跑就用它（零登录）；找不到会问你一次并记在这里
-#   也可以写死路径，比如 profile = 'C:\Users\me\AppData\Local\Google\Chrome\User Data'
+# 用哪套登录态（--user-data-dir）。
+#   留空（推荐）= 助手专用目录 ~/.course-ai-helper-profile，**登录一次之后一直有效**
+#   想换目录就填个**非默认**目录，例如：
+#     profile = 'D:\course-ai-helper-profile'
+#   ⚠ 不能指向浏览器默认数据目录：Chrome 136+ 会对默认目录忽略 --remote-debugging-port，
+#     工具就连不上了（Google 的安全加固，详见 docs/find-profile.md）
 profile = ""
 # 有些平台（如智慧树）把题干预设在**闭合 Shadow DOM** 里，页面内的脚本读不到，
 # 必须让助手直连浏览器的调试端口去**只读**读取。启用方式见 启动带调试浏览器.bat

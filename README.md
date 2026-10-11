@@ -87,46 +87,44 @@ $ node cli.mjs chaoxing "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?...
 
 **浏览器没开？它会自己拉起来**（带调试端口）。
 
-### 关于登录：不用每次登
+### 关于登录：**登录一次，之后一直有效**
 
-工具按这个顺序挑浏览器 profile：
+| | |
+| --- | --- |
+| 用什么 profile | 助手专用目录 `~/.course-ai-helper-profile`（Windows：`%USERPROFILE%\.course-ai-helper-profile`）|
+| 要登录几次 | **一次**。这个目录是持久的，登录态会一直留在里面 |
+| 能不能借你日常 Chrome 的登录态 | **不能** —— 见下 |
 
-| 情况 | 用什么 | 要不要登录 |
-| --- | --- | --- |
-| 你的 Chrome/Edge **完全退出**了 | **你日常浏览器的 profile** | **零登录**（直接就是你已登录的账号）|
-| 你的浏览器**正在运行** | 助手专用 profile（`~/.course-ai-helper-profile`）<br>（运行中的浏览器锁着 profile，也连不上调试端口）| 登录**一次**，以后一直记得 |
-| `--profile <目录>` | 你指定的 | 看那个 profile |
+#### ⚠ 为什么不能借用你日常 Chrome 的登录态
 
-所以最省事：**先把 Chrome 完全退出，再跑命令** —— 一点登录都不用。
-如果不想退出，第一次在那个窗口里登一下，之后就再也不问了。
+[Chrome 136 起](https://developer.chrome.com/blog/remote-debugging-port)，Google 做了一项安全加固：
 
-想先登录好再跑：`node cli.mjs --login "<答题页链接>"`（或双击 `启动带调试浏览器.bat`）。
+> 如果尝试调试**默认的 Chrome 数据目录**，`--remote-debugging-port` / `--remote-debugging-pipe` **将不再被遵循**。
+> 这些开关必须与 `--user-data-dir` 搭配、指向**非标准目录**。
 
-### 浏览器和 profile 是怎么找的
+也就是说：拿你日常的 profile 开调试端口，Chrome 会**直接忽略**这个参数 —— 工具连不上去。
+这从设计上就堵死了"借用你日常登录态"这条路（它本来就是为了防恶意工具偷 cookie 才加的）。
+
+所以本工具**固定用一个非默认目录**（助手专用 profile）。想换目录可以用
+`[cdp] profile`，但**必须是非默认目录**。
+
+> 第一次跑会打开一个"干净"的浏览器 —— 在那个窗口里登录一次就行，之后不用再登。
+> 想换账号：删掉那个 profile 目录，或者 `[cdp] profile` 指到另一个非默认目录。
+
+> 💡 进阶：Chromium 官方的 **Chrome for Testing** 不受这条限制，仍可对默认目录开调试端口。
+> 本工具没有内置它，但你可以把 `[cdp] browser` 指到它。
+
+### 浏览器是怎么找的
 
 **不扫描磁盘**，只对各系统的标准位置做存在性检查（`fs.existsSync`）：
 
 | 系统 | 查这些位置 |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\Google\Chrome\User Data`、`Chrome Beta`、`Chrome SxS`（Canary）、`Microsoft\Edge\User Data`、360 极速、QQ 浏览器、搜狗 |
-| macOS | `~/Library/Application Support/Google/Chrome`、`Chrome Beta`、`Chrome Canary`、`Microsoft Edge`、`Chromium` |
-| Linux | `~/.config/google-chrome`、`-beta`、`chromium`、`microsoft-edge` |
+| Windows | `%ProgramFiles%\Google\Chrome\Application\chrome.exe`、`Program Files (x86)`、`%LOCALAPPDATA%`、`Microsoft\Edge` |
+| macOS | `/Applications/Google Chrome.app/...`、`Microsoft Edge.app` |
+| Linux | `PATH` 里的 `google-chrome` / `chromium` / `microsoft-edge`（用 `which` 确认真能跑）|
 
-分发出去以后，在别人机器上查的就是**他自己的** `%LOCALAPPDATA%`／`$HOME`，也就是他自己的账号 ——
-因为路径全部由环境变量拼出来，没有任何硬编码的用户名。
-
-**我们不解密 cookie**：只是把 profile 目录**交给 Chrome 自己**去用。
-所以 Chrome 127+ 的 App-Bound Encryption 对本工具毫无影响（那东西只挡"从外部读 cookie"的做法）。
-工具也从不读取 profile 里的任何文件。
-
-找不到时（浏览器装在非常规位置、便携版、小众浏览器）会**问你一次**，并把答案写进
-`config.toml` 的 `[cdp] browser`，以后不再问；也可以直接 `--browser "<路径>"`。
-
-### 📖 想手动指定 profile？看这份指引
-
-**[docs/find-profile.md](docs/find-profile.md)** —— 怎么在浏览器里找到自己的 profile 目录
-（一句话：地址栏敲 `chrome://version`，看「配置文件路径 / Profile Path」），
-以及为什么填进去的那一行会自动去掉末尾的 `\Default`。
+找不到时（便携版、小众浏览器、非常规安装）会**问你一次**，答案记进 `config.toml` 的 `[cdp] browser`。
 
 ### ⚠ `browser` 和 `profile` 是两件事
 
@@ -138,7 +136,10 @@ $ node cli.mjs chaoxing "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?...
 **填了 browser 并不等于确定了 profile** —— 比如便携版 Chrome 放在 `D:\Chrome\chrome.exe`，
 它的登录态一般在 **exe 同级或上级的 `User Data`**，不在系统标准目录里。
 
-所以 profile 探测是**跟着你填的 exe 走**的：
+> ⚠ 另外：`[cdp] profile` **不能指向默认数据目录**（Chrome 136+ 会忽略调试端口）。
+
+所谓"profile 探测"现在只用于**信息展示**（`--doctor` 里告诉你日常 profile 在哪），
+实际用的是助手专用目录。所以你填的 profile 只有一种用途：**换一个非默认目录**。
 
 1. 从 exe 文件名判断"家族"（`chrome.exe` / `msedge.exe` / `360…` / `QQBrowser…`），
    只去该家族对应的目录找；
