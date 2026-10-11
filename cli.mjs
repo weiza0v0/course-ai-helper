@@ -551,7 +551,7 @@ async function selftest() {
 async function solve(paper, settings) {
   const t0 = Date.now();
   const total = paper.questions.length;
-  let usage = {prompt: 0, completion: 0, requests: 0};
+  let usage = {prompt: 0, completion: 0, requests: 0, web: 0};
   const qState = new Map();
   const label = q => `[${q.index}/${total}]`;
   let toolCalls = 0;
@@ -583,7 +583,7 @@ async function solve(paper, settings) {
           bad(`${label(q)} ${ev.message}`);
           break;
         case 'usage':
-          usage = {prompt: ev.prompt || 0, completion: ev.completion || 0, requests: ev.requests || 0};
+          usage = {prompt: ev.prompt || 0, completion: ev.completion || 0, requests: ev.requests || 0, web: ev.web || 0};
           break;
         case 'answer': {
           const a = Array.isArray(ev.answer) ? ev.answer.join('') : String(ev.answer ?? '');
@@ -609,7 +609,7 @@ async function solve(paper, settings) {
     } else {
       cost = c(' · （想估算金额就在 config.toml 填 price_in / price_out）', 'dim');
     }
-    info(c(`    💰 用量：输入 ${k(usage.prompt)} · 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求）`, 'dim') + cost);
+    info(c(`    💰 用量：输入 ${k(usage.prompt)} · 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求，其中联网 ${usage.web || 0} 次）`, 'dim') + cost);
   }
   return {answers, results, ms, usage};
 }
@@ -815,7 +815,8 @@ async function doctor(platforms, CFG, opts) {
   console.log();
   info('模型与成本：');
   info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort} · 并发 ${CFG.model.concurrency}`);
-  info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）· 工具结果截断 ${CFG.model.max_tool_result_chars} 字符`);
+  info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）`);
+  info(`    工具结果截断 ${CFG.model.max_tool_result_chars} 字符 · 网页类 ${CFG.model.web_result_chars} 字符 · 每题最多联网 ${CFG.model.max_web_calls} 次`);
   if (CFG.model.price_in || CFG.model.price_out) info(`    单价：输入 ${CFG.model.price_in} / 输出 ${CFG.model.price_out} 元每百万 token（会估算花费）`);
   else warn('    没填 price_in / price_out → 只报 token 数，不估算金额');
 
@@ -842,6 +843,8 @@ async function main() {
     priceIn: CFG.model.price_in, priceOut: CFG.model.price_out,
     maxRounds: Number.isFinite(roundsOverride) && roundsOverride > 0 ? Math.min(roundsOverride, 20) : CFG.model.max_tool_rounds,
     maxToolResultChars: CFG.model.max_tool_result_chars,
+    maxWebCalls: CFG.model.max_web_calls,
+    webResultChars: CFG.model.web_result_chars,
     useTools: CFG.model.use_tools,
     reasoningEffort: CFG.model.reasoning_effort, timeoutSeconds: CFG.model.timeout_seconds,
     maxRetries: CFG.model.max_retries,
