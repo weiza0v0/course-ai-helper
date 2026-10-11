@@ -657,7 +657,22 @@ async function selftest() {
   // ★ 思考强度分档：文史 low / 数理 max。
   //   理由是实测出来的：输出 token 占实际花费约 78%（输出 8 元/百万 vs 缓存输入 0.04 元/百万），
   //   而思考 token 全部按输出价计费。
-  const {classifyQuestion, effortForQuestion} = await import('./lib/agent.mjs');
+  const {classifyQuestion, effortForQuestion, looksMathy, parseLabels} = await import('./lib/agent.mjs');
+  // ★ 兜底正则必须先抹掉年份：实测「五四运动爆发于（　）1919年…」这类题
+  //   用裸 \d 当数理信号会 4/4 全判错，于是一路按 max 思考强度烧钱。
+  t('兜底判定：带年份的文史题不再误判成数理（抹掉 年/年代/世纪/第X次）',
+    looksMathy('五四运动爆发于（　）1919年 1921年 1905年') === false
+    && looksMathy('《南京条约》签订于1842年，其内容不包括？') === false
+    && looksMathy('一战持续了4年，这说明了什么') === false);
+  t('兜底判定：数理题仍然认得出',
+    looksMathy('求矩阵 A 的行列式 det(A)') && looksMathy('计算 ∫x²dx')
+    && looksMathy('设随机变量 X~N(0,1)，求 P(X>1.96)'));
+  // ★ 模型分类的解析：长度对不上就返回 null（交给兜底），不能瞎按顺序贴标签
+  t('分类解析：正常数组', JSON.stringify(parseLabels('["文史","数理","文史"]', 3)) === JSON.stringify(['humanities', 'mathy', 'humanities']));
+  t('分类解析：容忍代码块/废话包裹',
+    JSON.stringify(parseLabels('好，结果如下：\n```json\n["数理"]\n```', 1)) === JSON.stringify(['mathy']));
+  t('分类解析：题数对不上 → null（绝不硬凑）',
+    parseLabels('["文史"]', 3) === null && parseLabels('不是数组', 2) === null);
   {
     const hist = {stem: '沙盘推演实践教学有哪几个环节组成', options: [{text: '战役还原环节'}]};
     const math = {stem: '求矩阵 A 的行列式 det(A)', options: [{text: '-2'}]};
@@ -759,6 +774,13 @@ async function solve(paper, settings) {
       switch (ev.type) {
         case 'start':
           step(`读到 ${total} 道题，开始解题（${settings.model} · 思考 ${settings.reasoningEffortAuto === false ? settings.reasoningEffort : `数理 ${settings.reasoningEffort} / 文史 ${settings.reasoningEffortHumanities}`}）`);
+          break;
+        case 'classify':
+          if (ev.source === 'model') {
+            step(`先分个类（模型判定 · 不思考）：数理 ${ev.mathy} 题 / 文史 ${ev.humanities} 题 / 不确定 ${ev.unsure} 题`);
+          } else if (ev.message) {
+            warn(ev.message);
+          }
           break;
         case 'round':
           if (ev.round === 1) {
@@ -1055,6 +1077,7 @@ async function main() {
     reasoningEffort: CFG.model.reasoning_effort,
     reasoningEffortAuto: CFG.model.reasoning_effort_auto,
     reasoningEffortHumanities: CFG.model.reasoning_effort_humanities,
+    classifyWithModel: CFG.model.classify_with_model,
     timeoutSeconds: CFG.model.timeout_seconds,
     maxRetries: CFG.model.max_retries,
   };
