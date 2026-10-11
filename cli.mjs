@@ -41,6 +41,24 @@ import {runTool, toolSpecs} from './lib/tools.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** 把本次运行的终端输出同时写进 data/logs/run-<时间>.log（去掉 ANSI 颜色） */
+function startRunLog() {
+  try {
+    const dir = path.join(__dirname, 'data', 'logs');
+    fs.mkdirSync(dir, {recursive: true});
+    const file = path.join(dir, `run-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
+    const orig = console.log.bind(console);
+    console.log = (...a) => {
+      orig(...a);
+      try {
+        // 同步写：流是异步的，进程退出时最后几行会丢
+        fs.appendFileSync(file, a.map(x => (typeof x === 'string' ? x : String(x))).join(' ').replace(/\x1b\[[0-9;]*m/g, '') + '\n');
+      } catch {}
+    };
+    return file;
+  } catch { return null; }
+}
+
 // ------------------------------------------------------------------ 终端样式
 const C = {
   reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
@@ -485,6 +503,14 @@ async function selftest() {
     guardOut.includes("const BACKEND = 'http://127.0.0.1:0'") && guardOut.includes("BACKEND.includes('__BACKEND__')"),
     guardOut.split('\n')[1]);
 
+  // 2c. 工具结果截断（省钱关键：超长结果会在后续每一轮被重发）
+  const {truncateToolResult} = await import('./lib/agent.mjs');
+  const long = 'x'.repeat(50000);
+  const cut = truncateToolResult(long, 2000);
+  t('工具结果截断：50000 → 2000 字符 + 截断说明',
+    cut.length < 2100 && cut.includes('已截断') && cut.startsWith('x'.repeat(100)));
+  t('工具结果截断：短结果原样返回', truncateToolResult('abc', 2000) === 'abc');
+
   // 3. 答案单
   const demo = {name: 'T', questions: [
     {index: 1, qid: 'q1', typeName: '多选', stem: '题干一', options: [{letter: 'A', text: '甲'}, {letter: 'B', text: '乙'}, {letter: 'C', text: '丙'}, {letter: 'D', text: '丁'}]},
@@ -525,6 +551,7 @@ async function selftest() {
 async function solve(paper, settings) {
   const t0 = Date.now();
   const total = paper.questions.length;
+  let usage = {prompt: 0, completion: 0, requests: 0};
   const qState = new Map();
   const label = q => `[${q.index}/${total}]`;
   let toolCalls = 0;
@@ -555,6 +582,9 @@ async function solve(paper, settings) {
         case 'error':
           bad(`${label(q)} ${ev.message}`);
           break;
+        case 'usage':
+          usage = {prompt: ev.prompt || 0, completion: ev.completion || 0, requests: ev.requests || 0};
+          break;
         case 'answer': {
           const a = Array.isArray(ev.answer) ? ev.answer.join('') : String(ev.answer ?? '');
           const meaning = ev.meaning || ev.text || '';
@@ -568,7 +598,20 @@ async function solve(paper, settings) {
   line();
   const got = Object.values(answers).filter(Boolean).length;
   ok(`${got}/${total} 已解题 · 耗时 ${(ms / 1000).toFixed(1)}s · 工具调用 ${toolCalls} 次`);
-  return {answers, results, ms};
+  // ---- 用量与花费（本来就该有，之前完全没有计量）
+  if (usage.prompt || usage.completion) {
+    const k = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    const pin = Number(settings.priceIn) || 0, pout = Number(settings.priceOut) || 0;
+    let cost = '';
+    if (pin || pout) {
+      const y = usage.prompt / 1e6 * pin + usage.completion / 1e6 * pout;
+      cost = ` · 估算 ¥${y < 1 ? y.toFixed(3) : y.toFixed(2)}`;
+    } else {
+      cost = c(' · （想估算金额就在 config.toml 填 price_in / price_out）', 'dim');
+    }
+    info(c(`    💰 用量：输入 ${k(usage.prompt)} · 输出 ${k(usage.completion)} tokens（${usage.requests} 次请求）`, 'dim') + cost);
+  }
+  return {answers, results, ms, usage};
 }
 
 // ------------------------------------------------------------------ 等答题页（按 Enter 立即重测）
@@ -722,6 +765,70 @@ async function acquireAnswerPage({platform, port, CFG}) {
   return {session, tab, paper: null};
 }
 
+// ------------------------------------------------------------------ 诊断（不启动任何东西）
+async function doctor(platforms, CFG, opts) {
+  const port = Number(opts.port || CFG.cdp?.port || 9222);
+  console.log();
+  info(c('浏览器 / 登录态诊断（--doctor，不会启动或修改任何东西）', 'bold'));
+  line();
+
+  const running = await browserRunning();
+  running ? warn(`检测到 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行`)
+          : ok('没有检测到运行中的 Chrome/Edge');
+
+  try {
+    const tabs = await listTabs(port);
+    ok(`调试端口 ${port} 可用，已打开 ${tabs.length} 个标签`);
+    for (const t of tabs.slice(0, 8)) {
+      const hit = platforms.find(p => p.matchUrl && (p.matchUrl.test(t.url) || (p.siteUrl && p.siteUrl.test(t.url))));
+      info(c(`      ${hit ? '●' : '○'} ${(t.title || '').replace(/\s+/g, ' ').slice(0, 24).padEnd(24)} ${t.url.slice(0, 64)}${hit ? '  ← ' + hit.name : ''}`, 'dim'));
+    }
+  } catch {
+    info(c(`调试端口 ${port}：没有浏览器在监听`, 'dim'));
+  }
+
+  console.log();
+  info('浏览器可执行文件：');
+  const exeCfg = opts.browser || CFG.cdp?.browser || '';
+  info(`    [cdp] browser = ${exeCfg ? `'${exeCfg}'` : '(空 → 自动找)'}`);
+  const exe = exeCfg && fs.existsSync(exeCfg) ? exeCfg : detectBrowserExe();
+  exe ? ok(`    将使用：${exe}`) : bad('    没找到（启动时会问你一次，并记进 config.toml）');
+
+  console.log();
+  info('登录态（profile）：');
+  const {dir: realDir, name: realName} = findDefaultProfile(exe);
+  info(c(`    你日常的浏览器 profile：${realDir ? `${realName} → ${realDir}` : '（没找到）'}`, 'dim'));
+  info(c('    ⚠ Chrome 136+ 对**默认数据目录**会忽略 --remote-debugging-port（Google 的安全加固），', 'yellow'));
+  info(c('      所以不能借用你日常的登录态 —— 这是平台限制，不是本工具的 bug', 'yellow'));
+  const profCfg = opts.profile || CFG.cdp?.profile || '';
+  if (profCfg) {
+    const {dir, adjusted} = normalizeProfileDir(profCfg);
+    if (!fs.existsSync(dir)) bad(`    [cdp] profile 目录不存在：${dir}`);
+    else if (isDefaultProfileDir(dir)) bad(`    [cdp] profile 指向默认目录，Chrome 会忽略调试端口：${dir}`);
+    else ok(`    将使用（[cdp] profile）：${dir}${adjusted ? '  （已自动上退一级）' : ''}`);
+  } else {
+    const helper = helperProfileDir();
+    ok(`    将使用（助手专用 profile）：${helper}`);
+    info(c(`      ${fs.existsSync(path.join(helper, 'Default')) ? '✅ 已经用过（里面登录过的话会保留）' : '🆕 还不存在 —— 第一次跑会新建，需要登录一次'}`, 'dim'));
+  }
+
+  console.log();
+  info('模型与成本：');
+  info(`    ${CFG.model.model} · 思考 ${CFG.model.reasoning_effort} · 并发 ${CFG.model.concurrency}`);
+  info(`    每题最多 ${CFG.model.max_tool_rounds} 轮工具（--rounds N 可临时改）· 工具结果截断 ${CFG.model.max_tool_result_chars} 字符`);
+  if (CFG.model.price_in || CFG.model.price_out) info(`    单价：输入 ${CFG.model.price_in} / 输出 ${CFG.model.price_out} 元每百万 token（会估算花费）`);
+  else warn('    没填 price_in / price_out → 只报 token 数，不估算金额');
+
+  console.log();
+  info('历史日志：' + path.join('data', 'logs'));
+  try {
+    const logs = fs.readdirSync(path.join(__dirname, 'data', 'logs')).sort().slice(-3);
+    for (const l of logs) info(c('    · ' + l, 'dim'));
+  } catch {}
+  console.log();
+}
+
+
 // ------------------------------------------------------------------ 主流程
 async function main() {
   const {flags, opts} = parseArgs(process.argv.slice(2));
@@ -732,13 +839,16 @@ async function main() {
     baseUrl: CFG.model.base_url, apiKey: CFG.model.api_key, model: CFG.model.model,
     temperature: CFG.model.temperature, concurrency: CFG.model.concurrency,
     // 每题最多让模型调几轮工具：config.toml 的 [model] max_tool_rounds，可用 --rounds 临时覆盖
+    priceIn: CFG.model.price_in, priceOut: CFG.model.price_out,
     maxRounds: Number.isFinite(roundsOverride) && roundsOverride > 0 ? Math.min(roundsOverride, 20) : CFG.model.max_tool_rounds,
+    maxToolResultChars: CFG.model.max_tool_result_chars,
     useTools: CFG.model.use_tools,
     reasoningEffort: CFG.model.reasoning_effort, timeoutSeconds: CFG.model.timeout_seconds,
     maxRetries: CFG.model.max_retries,
   };
   const port = Number(opts.port || CFG.cdp?.port || 9222);
 
+  const logFile = CFG.app.save_log === false ? null : startRunLog();
   console.log('\n' + c('  在线课程 AI 答题助手 · 终端版', 'bold') + c('   （只填不交卷）', 'dim'));
   line();
 
@@ -870,6 +980,8 @@ async function main() {
   } else {
     warn('答案已填入页面。请自己核对后再提交 —— 本工具不会替你提交。');
   }
+  console.log();
+  if (logFile) info(c('本次日志：' + path.relative(__dirname, logFile), 'dim'));
   console.log();
   session.close();
 }
