@@ -13,4 +13,6 @@ export const homeUrl = 'https://i.chaoxing.com/base';
 export const platformHint = '登录后进入课程 → 作业/考试 → 开始答题（要能看到题目和选项）';
 export const pageScript = 'console/helper.js';
 export const allowOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/[a-z0-9-]*(chaoxing|xuexitong|chaoxingc)\.(com|cn)$/;
-export const matchUrl = /(chaoxing|xuexitong|chaoxingc)\.(com|cn)/;
+// ★ 只认"答题页"
+export const matchUrl = /chaoxing\.com\/(mooc-ans\/mooc2\/work\/task|mooc2\/work\/task|exam-ans|exam\/)|(chaoxing|xuexitong|chaoxingc)\.(com|cn)\/.*(work|exam|homework|test)/i;
+export const siteUrl = /(chaoxing|xuexitong|chaoxingc)\.(com|cn)/i;

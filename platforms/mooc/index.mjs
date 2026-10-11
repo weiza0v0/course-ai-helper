@@ -14,4 +14,7 @@ export const pageScript = 'console/helper.js';  // 页面脚本：由终端用 C
 // 允许跨域调本服务的来源（控制台脚本要跨域）
 export const allowOriginRe = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$|^https:\/\/(www\.)?icourse163\.(org|com)$/;
 // 该平台的题目页特征（用于状态提示，可留空）
-export const matchUrl = /icourse163\.(org|com)\/(spoc|course|learn|exam|web)/;
+// ★ 只认"答题页"（课程页/首页不算）—— 否则会把 /course/xxx 当成答题页
+export const matchUrl = /icourse163\.(org|com)\/.*(\/learn\/|quiz|exam|homework|test)/i;
+// 宽口径：只要是中国大学MOOC 的页面（给 --list 上色用）
+export const siteUrl = /icourse163\.(org|com)/i;

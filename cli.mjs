@@ -558,109 +558,100 @@ async function solve(paper, settings) {
   return {answers, results, ms};
 }
 
-// ------------------------------------------------------------------ 等页面就绪（含等用户登录）
-async function waitUntilReady(session, platform, url) {
-  const re = platform.matchUrl ? platform.matchUrl.source : null;
-  const probe = `(() => {
-    const href = location.href;
-    if (${re ? `!(${re}).test(href)` : 'false'}) return 'routing';
-    const n = document.querySelectorAll('.examPaper_subject, .question-item, .nodeLab, .TiMu, .questionLi').length;
-    if (n > 0) return 'ready';
-    const t = document.body ? document.body.innerText : '';
-    if (/登录|扫码|验证码/.test(t) && t.length < 400) return 'login';
-    return 'wait';
-  })()`;
-  for (let i = 0; i < 90; i++) {
-    let st = 'ready';
-    try { st = await session.eval(probe); } catch { st = 'wait'; }
-    if (st === 'ready') return true;
-    if (st === 'routing' && i === 3) step('等页面路由到答题界面…');
-    if (i === 6) {
-      warn('页面还没就绪 —— 如果需要登录，请在浏览器窗口里登录并进入答题界面');
-      info(c('    本程序会继续等（最多 90 秒）', 'dim'));
-    }
-    await sleep(1000);
-  }
-  warn('等超时了，仍继续尝试读题');
-  return false;
-}
-
-// ------------------------------------------------------------------ 诊断（不启动任何东西）
-async function doctor(platforms, CFG, opts) {
-  const port = Number(opts.port || CFG.cdp?.port || 9222);
-  console.log();
-  info(c('浏览器 / 登录态诊断（--doctor，不会启动或修改任何东西）', 'bold'));
-  line();
-
-  // 1) 浏览器进程
-  const running = await browserRunning();
-  running ? warn(`检测到 ${running === 'edge' ? 'Edge' : 'Chrome'} 正在运行`)
-          : ok('没有检测到运行中的 Chrome/Edge');
-  if (running) info(c('    ↑ 运行中的浏览器锁着自己的 profile，也连不上调试端口', 'dim'));
-
-  // 2) 调试端口
+// ------------------------------------------------------------------ 等答题页（按 Enter 立即重测）
+/** 监听 Enter：按一下立刻重测；顺便接管 Ctrl+C（raw 模式下不会自动发 SIGINT） */
+function onEnter(fn) {
+  if (!process.stdin.isTTY) return () => {};
   try {
-    const tabs = await listTabs(port);
-    ok(`调试端口 ${port} 可用，已打开 ${tabs.length} 个标签`);
-    for (const t of tabs.slice(0, 8)) {
-      const hit = platforms.find(p => p.matchUrl && p.matchUrl.test(t.url));
-      info(c(`      ${hit ? '●' : '○'} ${(t.title || '').slice(0, 22).padEnd(22)} ${t.url.slice(0, 66)}${hit ? '  ← ' + hit.name : ''}`, 'dim'));
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+  } catch { return () => {}; }
+  const h = (str, key) => {
+    if (key && key.ctrl && (key.name === 'c' || key.name === 'd')) {
+      try { process.stdin.setRawMode(false); } catch {}
+      console.log('\n  ' + c('已手动退出（没有在页面上做任何修改）', 'yellow'));
+      process.exit(130);
     }
-    info(c('    （已经有一个带调试端口的浏览器在跑，工具会直接用这个，不会另开）', 'dim'));
-  } catch (e) {
-    info(c(`调试端口 ${port}：没有浏览器在监听`, 'dim'));
-  }
-
-  // 3) 浏览器可执行文件
-  console.log();
-  const exeCfg = opts.browser || CFG.cdp?.browser || '';
-  info('浏览器可执行文件：');
-  info(`    [cdp] browser = ${exeCfg ? `'${exeCfg}'` : '(空 → 自动找)'}`);
-  const exe = exeCfg && fs.existsSync(exeCfg) ? exeCfg : detectBrowserExe();
-  exe ? ok(`    将使用：${exe}`) : bad('    没找到（启动时会问你一次，并记进 config.toml）');
-  if (!exeCfg) {
-    const auto = process.platform === 'win32' ? [
-      path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'),
-      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google/Chrome/Application/chrome.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'),
-      path.join(process.env['ProgramFiles'] || '', 'Microsoft/Edge/Application/msedge.exe'),
-    ] : [];
-    for (const c of auto) if (c) info(c(`      ${fs.existsSync(c) ? '✓' : '·'} ${c}`, 'dim'));
-  }
-
-  // 4) profile（登录态）
-  console.log();
-  const profCfg = opts.profile || CFG.cdp?.profile || '';
-  info('登录态（profile）：');
-  const {dir: realDir, name: realName} = findDefaultProfile(exe);
-  info(c(`    你日常的浏览器 profile：${realDir ? `${realName} → ${realDir}` : '（没找到）'}`, 'dim'));
-  info(c('    ⚠ Chrome 136+ 对**默认数据目录**会忽略 --remote-debugging-port（Google 的安全加固），', 'yellow'));
-  info(c('      所以不能借用你日常的登录态 —— 这是平台限制，不是本工具的 bug', 'yellow'));
-  if (profCfg) {
-    const {dir, adjusted} = normalizeProfileDir(profCfg);
-    const bad = isDefaultProfileDir(dir);
-    if (!fs.existsSync(dir)) bad(`    [cdp] profile 目录不存在：${dir}`);
-    else if (bad) bad(`    [cdp] profile 指向默认目录，Chrome 会忽略调试端口：${dir}`);
-    else ok(`    将使用（[cdp] profile）：${dir}${adjusted ? '  （已自动上退一级）' : ''}`);
-  } else {
-    const helper = helperProfileDir();
-    const inited = fs.existsSync(path.join(helper, 'Default'));
-    ok(`    将使用（助手专用 profile）：${helper}`);
-    info(c(`      ${inited ? '✅ 已经用过（里面登录过的话会保留）' : '🆕 还不存在 —— 第一次跑会新建，需要登录一次'}`, 'dim'));
-    info(c('      登录一次之后一直有效（profile 是持久目录，不会每次清空）', 'dim'));
-  }
-
-  console.log();
-  extInfo();
-  console.log();
+    if (key && (key.name === 'return' || key.name === 'enter')) fn();
+  };
+  process.stdin.on('keypress', h);
+  return () => { process.stdin.off('keypress', h); try { process.stdin.setRawMode(false); } catch {} };
 }
 
-function extInfo() {
-  const helper = helperProfileDir();
-  info('助手专用 profile：' + helper);
-  info(c(`    ${fs.existsSync(path.join(helper, 'Default')) ? '已经用过（登录态保留在里面）' : '还不存在 —— 第一次跑会新建，需要登录一次'}`, 'dim'));
-  info(c('    想换目录：config.toml 的 [cdp] profile，或 --profile "<非默认 User Data 目录>"', 'dim'));
-  info(c('    注意：不能指向默认数据目录（Chrome 136+ 会忽略调试端口）', 'dim'));
+const READY_PROBE = `(() => document.querySelectorAll('.examPaper_subject, .question-item, .nodeLab, .TiMu, .questionLi, .subject_node, [class*="question"]').length)()`;
+
+/**
+ * 等用户把页面点到"答题界面"，中途：
+ *   · 一直扫标签，找到匹配的答题页就自动附加（换页也会跟着换）
+ *   · 页面一旦有题目节点就注入页面脚本开始读题
+ *   · **随时按 Enter 立即重测**
+ */
+async function acquireAnswerPage({platform, port, CFG, timeoutSec = 300}) {
+  let force = false;
+  const off = onEnter(() => { force = true; });
+  let session = null, tab = null, injected = false, elapsed = 0, tick = 0;
+
+  step(`等待 ${platform.name} 的答题页（进去后自动识别；随时按 ${c('Enter', 'bold')} 立即重测）`);
+  if (platform.platformHint) info(c('    怎么进：' + platform.platformHint, 'dim'));
+  info(c('    链接可以不给 —— 你在浏览器里点进去就行', 'dim'));
+  info('');
+
+  try {
+    while (elapsed < timeoutSec) {
+      const woke = force; force = false;
+      if (woke) info(c('    （手动重测）', 'dim'));
+      tick++;
+
+      // 1) 找一个匹配的答题页标签（换了就重新附加）
+      const tabs = await listTabs(port).catch(() => []);
+      const hit = tabs.find(t => platform.matchUrl.test(t.url));
+      if (hit && (!tab || hit.url !== tab.url)) {
+        if (session) { try { session.close(); } catch {} }
+        tab = hit;
+        session = await CdpSession.attach(tab);
+        injected = false;
+        ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
+      }
+
+      if (session) {
+        if (platform.mode === 'script') {
+          const n = await session.eval(READY_PROBE).catch(() => 0);
+          if (!injected && n > 0) {
+            await session.eval(bridgeSource({
+              pollSeconds: CFG.app.poll_seconds,
+              fillIntervalMs: CFG.app.fill_interval_ms,
+              limitBackoffMs: CFG.app.limit_backoff_ms,
+            })).catch(() => {});
+            const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
+            await session.eval(preparePageScript(fs.readFileSync(helperPath, 'utf8'))).catch(e => {
+              info(c('    (脚本返回：' + String(e.message).slice(0, 60) + ')', 'dim'));
+            });
+            injected = true;
+            step('页面脚本已注入，正在读题…');
+          }
+          const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
+          if (raw) {
+            const paper = JSON.parse(raw);
+            if (paper && paper.questions && paper.questions.length) { off(); return {session, tab, paper}; }
+          }
+        } else if (tick % 2 === 1 || woke) {
+          // 只读模式不必每秒都拉一次完整 DOM
+          const paper = await platform.readPaper(session).catch(() => null);
+          if (paper && paper.questions && paper.questions.length) { off(); return {session, tab, paper}; }
+        }
+      }
+
+      if (!woke && elapsed && elapsed % 20 === 0) {
+        const t2 = await listTabs(port).catch(() => []);
+        const near = t2.filter(t => platform.siteUrl ? platform.siteUrl.test(t.url) : false).length;
+        info(c(`    还在等…（${elapsed}s / ${timeoutSec}s，${t2.length} 个标签${near ? `，其中 ${near} 个是 ${platform.name} 的页面但还不是答题页` : ''}）`, 'dim'));
+      }
+
+      if (woke) await sleep(30);
+      else { await sleep(1000); elapsed++; }
+    }
+  } finally { off(); }
+  return {session, tab, paper: null};
 }
 
 // ------------------------------------------------------------------ 主流程
@@ -684,7 +675,7 @@ async function main() {
     const tabs = await listTabs(port).catch(e => { bad(e.message); process.exit(2); });
     info(`端口 ${port} 上有 ${tabs.length} 个标签：`);
     for (const t of tabs) {
-      const hit = platforms.find(p => p.matchUrl && p.matchUrl.test(t.url));
+      const hit = platforms.find(p => p.matchUrl && (p.matchUrl.test(t.url) || (p.siteUrl && p.siteUrl.test(t.url))));
       info(`  ${hit ? c('●', 'green') : c('○', 'dim')} ${(t.title || '').slice(0, 26).padEnd(26)} ${t.url.slice(0, 74)}${hit ? c('  ← ' + hit.name, 'green') : ''}`);
     }
     console.log();
@@ -743,88 +734,43 @@ async function main() {
     info(c('    登录态会一直保存在这个 profile 里，以后不用再登', 'dim'));
     info('');
   }
-  let tab = null;
+  // ---- 给了链接就先打开它；没给就让用户自己在窗口里点（下面 acquireAnswerPage 会等）
   if (url) {
-    tab = await resolveTab(port, url, {forceNew: flags.has('new')});
+    let tab = await resolveTab(port, url, {forceNew: flags.has('new')});
     if (!tab) { bad('没能打开标签'); process.exit(2); }
     const strip = u => String(u).split('#')[0].replace(/\/+$/, '');
     if (strip(tab.url) !== strip(url)) {
-      step('打开页面：' + url.slice(0, 90));
+      step('打开页面：' + String(url).slice(0, 90));
       const tmp = await CdpSession.attach(tab);
       await tmp.navigate(url).catch(() => {});
       tmp.close();
       await sleep(1200);
-      const fresh = await listTabs(port);
-      tab = fresh.find(t => norm(t.url) === norm(url)) || fresh.find(t => t.url.includes(String(url).split('#')[1] || '\u0000')) || tab;
-    }
-  } else {
-    let tabs0 = await listTabs(port);
-    tab = tabs0.find(t => platform.matchUrl && platform.matchUrl.test(t.url)) || null;
-    // 窗口里停在 about:blank / 新标签页时，主动导航到平台首页，别让人对着白屏
-    if (!tab && platform.homeUrl) {
-      const blank = tabs0.find(t => /^(about:blank|chrome:\/\/(newtab|new-tab-page)|edge:\/\/newtab)/i.test(t.url || ''));
-      if (blank) {
-        step('把空白标签导航到 ' + platform.name + ' 首页：' + platform.homeUrl);
-        const tmp = await CdpSession.attach(blank).catch(() => null);
-        if (tmp) { await tmp.navigate(platform.homeUrl).catch(() => {}); tmp.close(); await sleep(1500); }
-        tabs0 = await listTabs(port).catch(() => tabs0);
-      }
-    }
-    if (!tab) {
-      info('');
-      step(`浏览器已打开 —— 请在窗口里进入 ${platform.name} 的答题页`);
-      if (platform.platformHint) info(c('    怎么进：' + platform.platformHint, 'dim'));
-      info(c('    不用回来粘贴链接，我会自动发现那个页面（最多等 3 分钟）', 'dim'));
-      for (let i = 0; i < 180; i++) {
-        await sleep(1000);
-        const tabs = await listTabs(port).catch(() => []);
-        tab = tabs.find(t => platform.matchUrl && platform.matchUrl.test(t.url));
-        if (tab) break;
-        if (i % 15 === 14) info(c(`    还在等…（已等 ${i + 1} 秒）当前 ${tabs.length} 个标签`, 'dim'));
-      }
-      if (!tab) {
-        bad('等了 3 分钟也没看到匹配的答题页');
-        info('  看看浏览器里现在开着什么：');
-        const tabs = await listTabs(port).catch(() => []);
-        for (const t of tabs) info(c(`    · ${(t.title || '').slice(0, 24)} ${t.url.slice(0, 70)}`, 'dim'));
-        info('');
-        info('  也可以直接把链接给我：node cli.mjs ' + platform.id + ' "<答题页链接>"');
-        process.exit(3);
-      }
-      ok('自动发现答题页：' + (tab.title || '').slice(0, 40));
     }
   }
   ok(`平台：${platform.name}（${platform.mode === 'cdp' ? 'CDP 只读' : '页面脚本'}模式）`);
-  info(c('     ' + (tab.url || '').slice(0, 100), 'dim'));
+  info(c(`    端口 ${port}`, 'dim'));
 
-  const session = await CdpSession.attach(tab);
   const sheetOnly = flags.has('sheet') || flags.has('no-fill') || platform.mode === 'cdp';
-  await waitUntilReady(session, platform, url);
 
-  let paper = null, fillResult = null;
+  // ---- 等答题页（可交互：随时按 Enter 立即重测）
+  const acq = await acquireAnswerPage({platform, port, CFG});
+  if (!acq.paper) {
+    bad('一直没等到答题页');
+    const tabs = await listTabs(port).catch(() => []);
+    info('  浏览器里现在开着：');
+    for (const t of tabs) info(c(`    · ${(t.title || '').replace(/\s+/g, ' ').slice(0, 26).padEnd(26)} ${t.url.slice(0, 66)}`, 'dim'));
+    info('');
+    info('  提示：要在**同一个浏览器窗口**里进入答题界面（能看到题目和选项）');
+    info('  也可以直接给链接：node cli.mjs ' + platform.id + ' "<答题页链接>"');
+    process.exit(3);
+  }
+  const session = acq.session;
+  const paper = acq.paper;
+  ok(`读到 ${paper.questions.length} 道题${paper.name || paper.title ? '：' + String(paper.name || paper.title).slice(0, 40) : ''}`);
+
+  let fillResult = null;
   if (platform.mode === 'script' && !sheetOnly) {
-    // ---- 注入桥接层 + 页面脚本，让脚本自己读题（还是那套验证过的 DOM 逻辑）
-    step('注入页面脚本，让它自己读题…');
-    await session.eval(bridgeSource({pollSeconds: CFG.app.poll_seconds, fillIntervalMs: CFG.app.fill_interval_ms, limitBackoffMs: CFG.app.limit_backoff_ms}));
-    const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
-    const src = preparePageScript(fs.readFileSync(helperPath, 'utf8'));
-    session.eval(src).catch(e => info(c('    (脚本执行返回：' + e.message.slice(0, 60) + ')', 'dim')));
-
-    // 等它把题目交上来
-    paper = null;
-    for (let i = 0; i < 40; i++) {
-      await sleep(400);
-      const raw = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.paper ? JSON.stringify(window.__BRIDGE__.paper) : null').catch(() => null);
-      if (raw) { paper = JSON.parse(raw); break; }
-    }
-    if (!paper || !paper.questions?.length) {
-      bad('页面脚本没能读到题目。请确认浏览器停在答题界面（能看到题目和选项）。');
-      const diag = await session.eval('typeof __ZHS_HELPER__ === "object" ? JSON.stringify(__ZHS_HELPER__.diagnose()) : "(该平台脚本无诊断)"').catch(() => null);
-      if (diag && diag !== '"(该平台脚本无诊断)"') info(c(diag.slice(0, 400), 'dim'));
-      session.close();
-      process.exit(3);
-    }
-    // 桥接层是"先别自动解题"，这里由终端来解
+    // 题目已经由页面脚本读好了（acquireAnswerPage 里注入的），这里由终端来解
     const {answers} = await solve(paper, settings);
 
     step('把答案交回页面脚本，让它自己填…');
@@ -837,20 +783,11 @@ async function main() {
     await sleep(1500);
     fillResult = {done: true};
   } else {
-    // ---- CDP 只读：直接从 DOM 读卷（能穿透闭合 Shadow DOM），不执行页面脚本、不点击
-    if (platform.mode === 'cdp') step('CDP 只读读取答题页（不执行页面脚本、不点击任何东西）…');
-    else step('CDP 只读读取答题页…');
-    paper = await platform.readPaper(session);
-    if (!paper || !paper.questions?.length) {
-      bad('没读到题目。请确认浏览器停在答题界面。');
-      const d = await platform.diagnose?.(session).catch(() => null);
-      if (d) info(c(JSON.stringify(d), 'dim'));
-      session.close();
-      process.exit(3);
-    }
+    // ---- CDP 只读：卷子已由 acquireAnswerPage 只读读出
+    step('只读出答案单模式（不执行页面脚本、不在页面上点击）');
     const {answers} = await solve(paper, settings);
     const md = renderAnswerSheet(paper, answers, {
-      siteName: platform.name, model: settings.model, url: tab.url,
+      siteName: platform.name, model: settings.model, url: paper.tid || '',
       solvedAt: new Date().toLocaleString('zh-CN'),
     });
     const dataDir = path.join(__dirname, 'data');
