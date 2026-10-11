@@ -20,6 +20,7 @@
  *   --list         只列出浏览器里的标签
  *   --doctor       诊断：浏览器在不在跑、会用哪个 exe/profile、登录态从哪来（不启动任何东西）
  *   --login        只打开登录窗口（借用你日常浏览器登录态；登录完再跑上面那条命令）
+ *   --rounds <n>    每题最多让模型调用几轮工具（默认取 config.toml 的 max_tool_rounds）
  *   --profile <dir> 指定浏览器 profile 目录（默认自动：优先借你日常浏览器的登录态）
  *   --browser <exe> 指定浏览器可执行文件（默认自动找；找不到会问你一次并记进 config.toml）
  *
@@ -621,7 +622,7 @@ async function acquireAnswerPage({platform, port, CFG}) {
   let wantStart = false;                       // 用户按了回车 = 开始读题
   const off = onEnter(() => { wantStart = true; });
 
-  step(`等你在浏览器里进入 ${platform.name} 的答题页`);
+  step(`等你在浏览器里进入 ${platform.name} 的答题页（不设超时，慢慢来）`);
   if (platform.platformHint) info(c('    怎么进：' + platform.platformHint, 'dim'));
   info(c('    我只看不动；进去了按 ' + (tty ? '回车' : '（非交互：探测到就直接开始）') + ' 开始读题+解题', 'dim'));
   info('');
@@ -661,7 +662,7 @@ async function acquireAnswerPage({platform, port, CFG}) {
   };
 
   try {
-    while (elapsed < 1800) {
+    for (;;) {   // ★ 不设时间上限：一直等到你按回车
       // 1) 找答题页标签（**按标签 id 判断**，别被 SPA 改 hash 骗得反复重挂）
       const tabs = await listTabs(port).catch(() => []);
       const hit = tabs.find(t => platform.matchUrl.test(t.url));
@@ -726,10 +727,13 @@ async function main() {
   const {flags, opts} = parseArgs(process.argv.slice(2));
   const platforms = await loadPlatforms(__dirname);
   const {config: CFG} = loadConfig(__dirname, process.env.CONFIG_FILE || '');
+  const roundsOverride = Number(opts.rounds);
   const settings = {
     baseUrl: CFG.model.base_url, apiKey: CFG.model.api_key, model: CFG.model.model,
     temperature: CFG.model.temperature, concurrency: CFG.model.concurrency,
-    maxRounds: CFG.model.max_tool_rounds, useTools: CFG.model.use_tools,
+    // 每题最多让模型调几轮工具：config.toml 的 [model] max_tool_rounds，可用 --rounds 临时覆盖
+    maxRounds: Number.isFinite(roundsOverride) && roundsOverride > 0 ? Math.min(roundsOverride, 20) : CFG.model.max_tool_rounds,
+    useTools: CFG.model.use_tools,
     reasoningEffort: CFG.model.reasoning_effort, timeoutSeconds: CFG.model.timeout_seconds,
     maxRetries: CFG.model.max_retries,
   };
