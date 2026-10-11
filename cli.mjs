@@ -520,6 +520,9 @@ async function selftest() {
     })());
   // ★ 整卷固定工具集：DeepSeek 缓存要求"完整匹配前缀单元"，
   //   逐题切换会让共享前缀 A 变形，永远命中不了（官方文档 Example 2）
+  t('工具裁剪：不确定就全发（纯图片题/文字过少 → 6 个）',
+    pickToolsForQuestion({stem: '', stemOcr: '', stemImages: ['x'], options: [{text: '', images: ['y']}]}).length === 6
+    && pickToolsForQuestion({stem: '计算', options: []}).length === 6);
   t('工具裁剪：整卷只定一次（纯文史 3 个 / 混合卷 6 个）',
     (() => {
       const pickToolsForPaper = await_import_paper;
