@@ -71,7 +71,7 @@ grep -rn "submitBtn\.click\|btn\.click()" platforms/ lib/ cli.mjs   # 无输出
 
 请求结构也刻意做成"稳定前缀在前"，让 DeepSeek 的自动缓存命中（实测 80%~94%）。跑完直接报钱。
 
-**7. 一条命令自检，离线可复现。** `node cli.mjs --selftest` 有 93 项，不连浏览器、不调模型，
+**7. 一条命令自检，离线可复现。** `node cli.mjs --selftest` 有 102 项，不连浏览器、不调模型，
 还包含几条**源码级安全红线**（"绝不退回前台标签""绝不生成 auto_submit"这类）。
 
 ## 固定流程（五步）
@@ -107,7 +107,7 @@ node cli.mjs <平台> [链接]     # 平台可写 1/2/3、id 或中文名
 node cli.mjs --list            # 列出浏览器里打开的标签
 node cli.mjs --doctor          # 诊断：端口/exe/profile/成本参数（不启动任何东西）
 node cli.mjs --login           # 只开登录窗口
-node cli.mjs --selftest        # 离线自检（35 项）
+node cli.mjs --selftest        # 离线自检（102 项）
 ```
 
 | 参数 | 说明 |
@@ -121,12 +121,20 @@ node cli.mjs --selftest        # 离线自检（35 项）
 | 平台 | 模式 | 状态 |
 | --- | --- | --- |
 | 中国大学MOOC | 页面脚本 → 自动填答 | ✅ 已实测 |
-| 超星学习通 | 页面脚本 → 自动填答 | ✅ 就绪；答题态 DOM 待社区用真实作业校准 |
+| 超星学习通 | **iframe 穿透 + 字体反爬截图** → 自动填答 | ✅ 已用真实章节测验验证 |
 | 智慧树 | **CDP 只读 → 终端打印** | ✅ 读卷 + 解题；🚫 不做自动填答 |
 
 **智慧树为什么只读**：题干预设在闭合 Shadow DOM 里（页内 JS 读不到，只能靠 CDP 穿透）；
 而自动点击的 `isTrusted=false` 会被平台判为"异常脚本"（实测弹窗）。
 于是只读卷 → 打印答案 → 你自己填。详见 [docs/zhihuishu-adapter.md](docs/zhihuishu-adapter.md)。
+
+**超星的两个坑（已适配）**：
+1. 题目套在 **4 层 iframe** 里（`studentstudy > knowledge/cards > ananas/work > iframe#frame_content`），
+   往顶层文档注入脚本读不到任何题 —— 现在会按 frame 探测，找到装题目的那个 frame 再注入；
+2. 题干/选项套了 `font-cxsecret` **字体反爬**：DOM 里的文字是乱码，只有渲染出来才是真字。
+   现在每题截一张图，交给多模态模型读题（所以 `model` 必须支持图片输入）。
+   截图时 Chrome 需要把答题页**临时切到前台**（隐藏标签页截不出图），**不会点击提交**。
+   详见 [docs/chaoxing-adapter.md](docs/chaoxing-adapter.md)。
 
 ## 六个工具
 
@@ -210,7 +218,7 @@ browser = ""
 ## 测试
 
 ```bash
-node cli.mjs --selftest      # 93 项：平台注册表 / 桥接层 / 工具裁剪 / 答案单 / 联网判定 / 安全红线
+node cli.mjs --selftest      # 102 项：平台注册表 / iframe 注入 / 字体反爬截图 / 桥接层 / 工具裁剪 / 安全红线
 node test/math-test.mjs      # 106 项，对照 numpy / scipy / sympy
 node test/real-test.mjs --paper examples/questions.json --expect examples/expected.json
 ```
@@ -220,7 +228,8 @@ node test/real-test.mjs --paper examples/questions.json --expect examples/expect
 - **永不自动交卷**：没有提交动作
 - **无 `eval` / `new Function`**：表达式走自研解析器 + 标识符白名单
 - 只通过本机 CDP 端口驱动浏览器，不监听任何端口、不对外联网暴露
-- 只填 / 只读，不修改页面结构；智慧树模式连点击都没有
+- 只填 / 只读，不修改页面结构；智慧树模式连点击都没有；超星只读原文 + 勾选/填空，**没有提交动作**
+- 超星截图会临时把答题页切到前台（Chrome 隐藏标签页截不了图），不会导航、不改动题目
 - 有监考、人脸识别、摄像头抓拍的考试请勿使用
 
 ## 更多文档

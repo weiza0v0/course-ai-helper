@@ -1,123 +1,169 @@
-# 超星学习通适配笔记（交接给社区）
+# 超星学习通 / 泛雅 适配笔记
 
-> 状态：**服务端 / 模型 / 数学工具已全部复用并跑通；差的是"答题态 DOM"的校准。**
-> 原因：作者手上这个账号的 11 个作业全部已提交、该课无考试，拿不到"正在作答"的页面。
-> 欢迎在你有**未作答**作业/章节测验的账号上跑一次诊断，把结果贴到 issue，我们就能把它补完。
+> 状态（2026-10）：**已用真实章节测验跑通**「iframe 穿透读题 → 多模态解题 → 自动填答」。
+> 测试卷：10 题（4 单选 + 1 判断 + 5 填空），整卷同页，未提交。
+> 仍然**永不交卷**：本适配层没有任何 submit 动作。
 
 ---
 
-## 1. 已经确认的部分
+## 1. 真实页面结构（实测）
 
-### 1.1 iframe 套娃链（这是超星最大的坑）
-
-超星把内容全塞在 iframe 里，而且是**跨子域**的，父页面 JS 读不到子页面 DOM：
+超星把内容全塞在 iframe 里，而且**题目不在第一层**：
 
 ```
-i.chaoxing.com/base
-  └─ iframe  mooc1-1.chaoxing.com/visit/interaction?s=<md5>          ← 课程卡片列表
-       └─ a.color1  →  mooc1-1.chaoxing.com/mooc-ans/visit/stucoursemiddle?courseid=..&clazzid=..&cpi=..&ismooc2=1&v=2
-            └─ 302 →  mooc2-ans.chaoxing.com/mooc2-ans/mycourse/stu?courseid=..&clazzid=..&cpi=..&enc=..&t=..&pageHeader=N
-                 └─ iframe  mooc1.chaoxing.com/mooc2/work/list?courseId=..&classId=..&cpi=..&ut=s&t=..&stuenc=..&enc=..
-                      └─ li[onclick="goTask(this)"] data="https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?...&workId=..&answerId=..&enc=.."
+学生学习页面  mooc1.chaoxing.com/mycourse/studentstudy?chapterId=...     ← 顶层标签页
+  └─ iframe#iframe  mooc1.chaoxing.com/mooc-ans/knowledge/cards?...     ← 课程内容卡片
+       └─ iframe   mooc1.chaoxing.com/ananas/modules/work/index.html     ← 作业/测验模块
+            └─ iframe#frame_content  mooc1.chaoxing.com/mooc-ans/work/doHomeWorkNew?...  ← 题目在这
+                 └─ 10 × .TiMu
 ```
 
-- `pageHeader=0` 首页 / **`8` 作业** / **`9` 考试**
-- 课程页的 `t=` 时间戳和 `enc=` 是**会话绑定的**，手拼 URL 会得到「参数验证不通过 / 无效的参数」——
-  必须从真实点击链路拿。
+实测结论：
 
-> ⚠️ 因此 `console/helper.js` 必须贴在**装题目的那个 iframe** 的 console 上下文里
-> （DevTools 左上角有个 `top ▾` 上下文下拉框，切到对应 frame 再粘贴）。
-> 脚本检测不到题目时会打印提示。
+- 顶层 `document.querySelectorAll('.TiMu')` = **0**；
+- 顶层标签页 URL 是 `studentstudy`，路径里没有 work/exam，旧版按 URL 正则找答题页**根本认不出来**；
+- 题目在第 4 层 document 里，必须按 frame 逐个探测，再往**那个 frame 的上下文**注入脚本。
 
-### 1.2 作业列表行（实测抓到的真实 HTML）
+现在的做法：
 
-```html
-<li onclick="goTask(this);"
-    data="https://mooc1.chaoxing.com/mooc-ans/mooc2/work/task?courseId=250812473&classId=117171581&cpi=412310891&workId=43885025&answerId=53970903&enc=f83056..."
-    tabindex="0" aria-label="第十章 ; 已完成" role="link">
-  <div class="tag work-icon icon-zy-g"></div>
-  <div class="right-content">
-    <p class="overHidden2 fl">第十章</p>
-    <p class="status fl">已完成</p>
-    <a class="listSubmit fl insightBtn" href="https://stat2-ans.chaoxing.com/study-knowledge/ans?...">智能分析</a>
-  </div>
-</li>
+1. 标签页用 `siteUrl`（所有 chaoxing 域名）筛选，不再要求 URL 里带 work；
+2. `CdpSession.findFrame(selector)` 遍历 `Page.getFrameTree`，在每个 frame 的默认执行上下文里数题目节点；
+3. 找到后 `setTargetFrame(frameId)`，后续的桥接层注入、读题、回填都在那个 frame 里执行。
+
+---
+
+## 2. 字体反爬（最大的坑）
+
+题干和选项的容器套了 `.font-cxsecret`：
+
+```css
+@font-face {
+  font-family: font-cxsecret;
+  src: url("data:application/font-ttf;charset=utf-8;base64,AAEAAAAMAIAAAwBAQkFTRR...");
+}
 ```
 
-### 1.3 已批阅详情页 `mooc2/work/view`（实测结构，**答题态大概率同构**）
+- 服务端把文字替换成随机的生僻字，再下发一个自定义字体；**渲染出来才是真字**；
+- DOM 里 `textContent` 拿到的是乱码，例如：
 
-```html
-<div class="fanyaMarking TiMu" id="fanyaMarking">
-  <div class="fanyaMarking_left whiteBg">
-    <h2 class="mark_title">第十章</h2>
-    <span class="resultNum"><i>100</i>分</span>
-    <div class="mark_table ans-cc fontLabel">
-      <div class="mark_item">
-        <h2 class="type_tit">一. 单选题（共8题，61.5分）</h2>
+  ```
+  设喸喺个随机喵営，喹充濆条営喸( ).       ← 实际应为「设 A,B 是两个随机事件…」
+  ```
 
-        <div class="marBom60 questionLi singleQuesId" id="question404723008" data="404723008" aria-label="题目详情">
-          <h3 class="mark_name colorDeep">
-            1. <span class="colorShallow">(单选题)</span>
-            <span class="qtContent workTextWrap">________把习近平总书记…写入党章。</span>
-          </h3>
-          <ul class="mark_letter colorDeep qtDetail">
-            <li class="workTextWrap">A. 党的十六大</li>
-            <li class="workTextWrap">B. 党的十七大</li>
-            <li class="workTextWrap">C. 党的十八大</li>
-            <li class="workTextWrap">D. 党的十九大</li>
-          </ul>
-          <div class="mark_answer">
-            <span>我的答案: <span class="stuAnswerContent">D</span></span>
-            <span class="element-invisible-hidden">:党的十九大; </span>
-            <span>正确答案: <span class="rightAnswerContent workTextWrap">D</span></span>
-          </div>
-          <div class="analysisDiv"><div class="analysis"><span class="qtAnalysis">…解析…</span></div></div>
-        </div>
+- 字体 info：`unitsPerEm=1000`，`name` 表里的 family 是 `Source Han Sans CN Normal`；
+- 逐字去解字体（glyph 轮廓 → 真字）需要参考字体、且映射可能每页随机 —— 不划算。
 
-      </div>
-    </div>
-  </div>
-</div>
-```
+**方案：截图 + 多模态模型。** 每题截一张图（jpeg，约 13–22 KB），作为 `q.shot`（data URL）
+塞进模型消息；文字只留题型/字母，明确告诉模型"文字是乱码，以截图为准"。
 
-要点：
-- **题目 id 就在 `data` 属性上**（`question404723008` → `404723008`），脚本已按这个取 `qid`；
-- `.mark_name` 里有题号和题型（`.colorShallow` = `(单选题)` / `(判断题)` / `(多选题)` / `(填空题)` …）；
-- 选项文本**自带字母**（`A. xxx`），所以在答题态用文本反查字母是可行的；
-- 题型分组在 `.mark_item > .type_tit`。
+截图实现要点（都踩过）：
 
-> 💡 顺带发现：**已批阅页的 DOM 里直接带 `正确答案`**（`.rightAnswerContent`，还有 `.element-invisible-hidden` 里的选项原文）。
-> 也就是说自己已交过的作业，答案是可以直接读出来的——但这对"正在作答"没有帮助。
-
-### 1.4 答题态还缺什么
-
-`mooc2/work/task?...` 页面（未作答状态）里，下面这些需要按真实页面确认：
-
-| 待确认 | 脚本里对应的函数 |
+| 问题 | 处理 |
 | --- | --- |
-| 选项的可点击元素是 `<li>` / `<a>` / `<label>` 还是里面的 `<i>` | `setOption()` 的 `target` |
-| 选中态 class（`check_answer` / `check_answer_dx` / `cur` / `on`） | `isSelected()` 的 `SELECTED_RE` |
-| 多选是 `input[type=checkbox]` 还是纯 class 切换 | `setOption()` 的 input 分支 |
-| 填空题输入框的 class（`tk_input` / `textarea[data-id]`） | `fillText()` |
-| 一页一题还是整卷同页（是否有"下一题"分页） | 采集范围 |
+| 隐藏标签页上 `Page.captureScreenshot` 会卡住 | 先 `Page.bringToFront` 把答题页切到前台 |
+| 目标题在当前视口外，`captureBeyondViewport` 截不到/超时 | 用 `Emulation.setDeviceMetricsOverride` 临时把视口放大到 1280×(4200+)；截完 `clearDeviceMetricsOverride` |
+| 题目在多层 iframe 里，坐标不对 | 顶层的 JS 递归拿到叶子 document，把每层 `getBoundingClientRect()` 加上 iframe 的边框累加，得到视口绝对坐标 |
+| 整卷截完还要恢复 | 只截单题 clip；不滚动页面（放大视口后整卷都在视口里） |
 
 ---
 
-## 2. 请社区帮忙的第一步（5 分钟）
+## 3. 题号 / 题型 / 选中态 / 填空
 
-1. 打开一个**没做过**的作业或章节测验，进入能看到题目和选项的答题界面；
-2. F12 控制台（记得把上下文切到题目所在的 frame），先输入 `allow pasting` 回车；
-3. 粘贴 `console/helper.js` 全量内容并回车；
-4. 它会自己采集；**如果采到 0 题**，它会自动打印 DOM 诊断，请把诊断 JSON 贴到 issue：<br>
-   或者手动跑：`__CX_HELPER__.diagnose()`
+### 3.1 题号不在 `data` 上
 
-诊断输出里包含：各个候选选择器的命中数、iframe 列表、最可能的题目容器、以及第一个容器的 `outerHTML`（前 1500 字符）——有这些就能一次改对。
+实测每个 `.TiMu` 的 `data` 属性是**题型**（0 单选 / 2 填空 / 3 判断），不是题号：
+
+```html
+<div class="TiMu newTiMu" data="0"> ... </div>
+```
+
+真实 qid 在隐藏域的 `name` 里：
+
+```html
+<input type="hidden" name="answer405717732">          <!-- 选择题 -->
+<input type="hidden" name="answertype405717732" value="0">
+<input type="hidden" name="tiankongsize405717760" value="1">   <!-- 填空题 -->
+<textarea name="answerEditor4057177601" style="display:none"></textarea>
+```
+
+旧版把 `data` 当 qid → 整卷只得到 `0/0/0/0/3/2/2/2/2/2` 三个 key，答案会串题。
+
+现在的提取顺序：`answertype<qid>` → `answer<qid>` → `tiankongsize<qid>` →
+`answerEditor<qid><序号>` → 选项 `[qid]` 属性。
+
+### 3.2 题型
+
+题型的文字标记在 `.newZy_TItle` 里（`【单选题】`/`【判断题】`/`【填空题】`…），
+隐藏域 `answertype` 的值也可兜底：0 单选 / 1 多选 / 2 填空 / 3 判断。
+
+### 3.3 两个"字母"（踩坑点）
+
+超星选项上有**两个字母**，千万别混：
+
+| 来源 | 例子 | 用途 |
+| --- | --- | --- |
+| `.num_option` 的**文本** | 显示 A / B / C / D | **用户看到的字母**（截图里也是它） |
+| `.num_option` 的 `data` 属性 | B / D / C / A | 平台内部原始题序（`addChoice` 用它拼提交值） |
+
+DOM 顺序 = 视觉顺序（A、B、C、D 从上到下），但 `data` 是按原始题序排的，两者是**错位**的。
+如果拿 `data` 当答案字母：终端说"选 A"，页面上高亮的却是**显示为 D** 的那个选项 ——
+看起来就是"答案和选的不一致"（本适配层早期版本就踩了这个坑，已改成一律用**显示字母**）。
+
+### 3.4 选中态
+
+选项 `li` 自带 `onclick="addChoice(this)"`。读页面里的 `addChoice` 源码可知：
+
+```js
+$(".choice" + qid).removeClass("check_answer");
+$(obj).find(".num_option").addClass("check_answer");
+$("#answer" + qid).val(choiceContent);
+```
+
+所以"已选中"的判据是 **`.num_option.check_answer`**（`li` 上的 `aria-checked=true` 也可）。
+点击直接点 `li` 即可（事件冒泡到 `onclick`）。
+
+### 3.5 填空题是 UEditor 富文本
+
+可见的是 contenteditable iframe，隐藏 textarea 只是同步用。直接改 textarea 的 `value` 不会生效，
+要拿编辑器实例：
+
+```js
+const ed = UE.getEditor(textarea.id) || window['answerEditor' + qid + '_1'];
+ed.setContent(html);
+ed.sync();
+```
 
 ---
 
-## 3. 已知注意事项
+## 4. 已验证 / 未验证
 
-- **别用在有监考/人脸识别/摄像头抓拍的考试上**（超星考试常见），既不合规也自动化不了；
-- 一页一题的考试：当前脚本只处理"当前页的题"，需要加翻页循环；
-- 超星**每选一个选项就会发一次保存请求**，所以 `fill_interval_ms`（默认 400ms）别调太小；
-- 超星会给题目加"AI 讲解"入口（`initAssistant(...)`），说明平台本身也在用大模型——这算个正面信号，但别指望它不检测自动化。
+**已验证**（真实章节测验，10 题）：
+
+- 4 层 iframe 穿透 + 注入；
+- 10 题 qid/题型/选项数量全部正确；
+- 字体反爬截图 10/10；
+- 只读模式 `--sheet`：10/10 解题，42.5s，输入 67.7k tokens（缓存命中 72%）；
+- 自动填答：单选点击、判断点击、填空写 UEditor（见下节复测命令）。
+
+**未验证 / 已知边界**：
+
+- 多选（`qtype=1` 走 `addMultipleChoice`）——本卷没有多选；
+- 一页一题 / 分页的考试；
+- 连线、排序、口语、完形填空等特殊题型；
+- 截图依赖"把答题页切到前台"：Chrome 隐藏标签页截不出图，**会短暂抢焦点**（不会导航/点击提交）；
+- 截图会进模型上下文，成本比纯文本题高；模型必须支持图片输入；
+- 有监考、人脸识别、摄像头抓拍的考试**不要用**（既不合规也自动化不了）。
+
+---
+
+## 5. 复测
+
+```bash
+# 1) 打开真实作业/章节测验，停在能看到题目和选项的页面
+node cli.mjs chaoxing --sheet    # 只读：读题 + 解题 + 打印答案单，不碰页面
+node cli.mjs chaoxing            # 自动填答（仍然不会提交）
+node cli.mjs --selftest          # 102 项离线自检（含超星 iframe/字体反爬的静态检查）
+```
+
+如果页面上读不到题，先跑 `node cli.mjs --doctor` 看端口/profile，再看终端里
+"识别到答题页 / 已就绪 —— 页面上能找到题目"这两行是否出现。

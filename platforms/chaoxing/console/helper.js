@@ -47,13 +47,42 @@
     [/填空/, '填空'], [/简答|论述|名词解释|计算题|分析/, '简答'], [/其他/, '其他'],
   ];
   function detectType(node) {
-    const marker = txt(node.querySelector('.mark_name, .markName, h3, .type'));
+    // ★ 超星把题型写在 .newZy_TItle 里（【单选题】/【判断题】/【填空题】…）
+    const marker = txt(node.querySelector('.newZy_TItle, .mark_name, .markName, .Zy_TItle, h3, .type')).slice(0, 40);
     for (const [re, name] of TYPES) if (re.test(marker)) return name;
-    // 没有文字标记就看控件
+    // 兜底：隐藏域 answertype<qid> 的值（实测 0 单选 / 1 多选 / 3 判断 / 2 填空）
+    const t = node.querySelector('input[name^="answertype"]');
+    if (t) {
+      const v = String(t.value);
+      if (v === '1') return '多选';
+      if (v === '3') return '判断';
+      if (v === '2') return '填空';
+      if (v === '0') return '单选';
+    }
+    // 最后才看控件
     if (node.querySelector('input[type=checkbox]')) return '多选';
     if (node.querySelector('input[type=radio]')) return '单选';
     if (node.querySelector('input[type=text], textarea')) return '填空';
     return '单选';
+  }
+
+  /**
+   * ★ 超星的真实题号**不在** data 属性上（`data` 是题型：0 单选 / 2 填空 / 3 判断），
+   *   而是在隐藏域 name 里：answertype405717800 / answer405717800 / tiankongsize405717760 /
+   *   answerEditor4057177601（qid + 空的序号）。老版本拿 data 当 qid，整卷只会得到 0/2/3 三个 key。
+   */
+  function questionId(node, i) {
+    const fields = [...node.querySelectorAll('input[type=hidden], textarea')];
+    for (const el of fields) {
+      const name = el.getAttribute('name') || el.id || '';
+      let m = name.match(/^answertype(\d+)$/) || name.match(/^answer(\d+)$/) || name.match(/^tiankongsize(\d+)$/);
+      if (m) return m[1];
+      m = name.match(/^answerEditor(\d+?)(\d)$/);   // qid + 空序号（多空题依次 1、2…）
+      if (m) return m[1];
+    }
+    const li = node.querySelector('[qid]');
+    if (li && /^\d+$/.test(li.getAttribute('qid') || '')) return li.getAttribute('qid');
+    return node.getAttribute('data-id') || node.id || ('q' + (i + 1));
   }
 
   function optionNodes(node) {
@@ -71,15 +100,20 @@
   }
 
   function optionInfo(li, k) {
-    const letterNode = li.querySelector('i.fl, i, .num, .optionNum');
-    let letter = txt(letterNode).replace(/[^A-Za-z]/g, '').toUpperCase();
-    if (!letter || letter.length > 2) letter = String.fromCharCode(65 + k);
-    const textNode = li.querySelector('.after, .optionCnt, .answer_p, label, span');
+    // ★★ 超星有两个"字母"，千万别混：
+    //   1) 页面上**显示**的字母（A/B/C/D）在 .num_option 的文本里 —— 用户/截图看到的是它；
+    //   2) 元素上的 data 属性是**原始题序**（addChoice 用它拼提交值，不是给人看的字母）。
+    //   以前拿 data 当字母：终端说"选 A"，页面上高亮的却是显示为 D 的那个选项 —— 看起来就像答案和选择不一致。
+    const num = li.querySelector('.num_option, i.fl, i, .num, .optionNum');
+    const shown = ((num && txt(num)) || '').replace(/[^A-Za-z]/g, '').toUpperCase();
+    let letter = shown.length >= 1 && shown.length <= 2 ? shown : String.fromCharCode(65 + k);
+    const textNode = li.querySelector('a.after, .after, .optionCnt, .answer_p');
     const input = li.querySelector('input');
+    const text = (txt(textNode) || txt(li)).replace(/^[A-Za-z][.、]?\s*/, '');
     return {
       letter,
-      oid: input && input.name ? `${input.name}#${input.value}` : String(k),
-      text: txt(textNode) || txt(li).replace(/^[A-Za-z][.、]?\s*/, ''),
+      oid: (num && num.getAttribute('data')) || li.getAttribute('qid') || (input && input.name) || String(k),
+      text,
       images: imgsIn(li),
     };
   }
@@ -94,17 +128,21 @@
       const lis = ['单选', '多选', '判断'].includes(typeName) ? optionNodes(node) : [];
       return {
         index: i + 1,
-        qid: node.getAttribute('data-id') || node.getAttribute('data') || node.id || `q${i + 1}`,
+        qid: questionId(node, i),
         type: typeName,
         typeName,
         score: (txt(node.querySelector('.mark_name, h3')).match(/\((\d+(?:\.\d+)?)分\)/) || [])[1] || null,
         stem,
         stemImages: imgsIn(titleNode),
         stemOcr: '',
-        options: lis.map(optionInfo),
+        options: lis.map((li, k) => optionInfo(li, k)),
       };
     });
-    return {tid: location.href, aid: 0, name: document.title, source: 'dom', collectedAt: new Date().toISOString(), questions, by};
+    return {
+      tid: location.href, aid: 0, name: document.title, source: 'dom', collectedAt: new Date().toISOString(),
+      obfuscated: document.querySelectorAll('.font-cxsecret').length > 0,   // 字体反爬（超星）
+      questions, by,
+    };
   }
 
   // ================================================================ 诊断（采集不到时用）
@@ -127,6 +165,10 @@
   // ================================================================ 填答
   const SELECTED_RE = /check_answer|check_answer_dx|cur|selected|on\b/;
   function isSelected(li) {
+    // ★ 超星：addChoice() 把 check_answer 加在 .num_option 上（同时给 li 设 aria-checked）
+    const num = li.querySelector('.num_option');
+    if (num && num.classList.contains('check_answer')) return true;
+    if (li.getAttribute('aria-checked') === 'true') return true;
     const a = li.querySelector('a');
     const i = li.querySelector('i');
     const input = li.querySelector('input');
@@ -139,16 +181,17 @@
     const input = li.querySelector('input');
     if (input && input.disabled) return false;
     if (isSelected(li) === want) return true;
-    const target = li.querySelector('a') || li;
+    // 超星：选项 li 自己带 onclick="addChoice(this)"，点 li 就会选中（点 a 也行，事件冒泡）
+    const onclick = (li.getAttribute('onclick') || '') + (li.parentElement ? (li.parentElement.getAttribute('onclick') || '') : '');
+    const target = /addChoice|addMultipleChoice/.test(onclick) ? li : (li.querySelector('a') || li);
     target.click();
+    await sleep(160);
     if (isSelected(li) === want) return true;
-    await sleep(200);
     if (input) {
       if (want) { input.checked = true; input.click(); }
       input.dispatchEvent(new Event('change', {bubbles: true}));
     }
-    if (isSelected(li) === want) return true;
-    await sleep(200);
+    await sleep(160);
     return isSelected(li) === want;
   }
 
@@ -167,11 +210,36 @@
     return false;
   }
 
-  function fillText(node, spec) {
-    const inputs = [...node.querySelectorAll('input[type=text], input:not([type]), textarea')];
-    if (!inputs.length) return false;
+  const escapeHtml = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  function fillText(node, spec, qid) {
     const vals = Array.isArray(spec) ? spec : String(spec).split(/[;；|]/).map(s => s.trim()).filter(Boolean);
+    if (!vals.length) return false;
+    // ★ 超星填空题是 UEditor 富文本：可见的是 contenteditable iframe，答案必须写进编辑器再 sync 回隐藏 textarea
+    const areas = [...node.querySelectorAll('textarea[id^="answerEditor"], textarea')];
     let n = 0;
+    for (let i = 0; i < areas.length && i < vals.length; i++) {
+      const ta = areas[i];
+      const v = vals[i];
+      const q = qid || (ta.id.match(/(\d+?)\d$/) || [])[1] || '';
+      const editor = (window.UE && typeof window.UE.getEditor === 'function' ? window.UE.getEditor(ta.id) : null)
+        || (q ? window['answerEditor' + q + '_' + (i + 1)] : null)
+        || (q ? window['answerEditor' + q + '_1'] : null);
+      try {
+        if (editor && typeof editor.setContent === 'function') {
+          editor.setContent(escapeHtml(v));
+          if (typeof editor.sync === 'function') editor.sync();
+          if (typeof editor.fireEvent === 'function') editor.fireEvent('contentchange');
+        } else {
+          ta.value = v;
+          ta.dispatchEvent(new Event('input', {bubbles: true}));
+          ta.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        n++;
+      } catch (e) { warn('填空题写入失败：' + e.message); }
+    }
+    if (n) return true;
+    // 兜底：普通 input
+    const inputs = [...node.querySelectorAll('input[type=text], input:not([type])')];
     for (let i = 0; i < inputs.length && i < vals.length; i++) {
       const inp = inputs[i];
       inp.focus();
@@ -194,7 +262,7 @@
     for (let i = 0; i < list.length; i++) {
       if (state.stop) break;
       const node = list[i];
-      const qid = node.getAttribute('data-id') || node.getAttribute('data') || node.id || `q${i + 1}`;
+      const qid = questionId(node, i);
       const spec = answers[qid] != null ? answers[qid]
         : answers[String(i + 1)] != null ? answers[String(i + 1)] : answers[i];
       const typeName = detectType(node);
@@ -204,21 +272,23 @@
       if (dlg) { dismissDialog(dlg); throttled++; warn(`页面提示"操作过于频繁/请稍后"，已关闭弹窗，等待 ${(backoffMs / 1000).toFixed(1)}s`); await sleep(backoffMs); }
 
       if (typeName === '填空' || typeName === '简答') {
-        const done = fillText(node, spec);
+        const done = fillText(node, spec, qid);
         done ? ok++ : fail++;
         rows.push({题号: i + 1, 类型: typeName, 答案: String(spec).slice(0, 30), 结果: done ? '✔ 已填入' : '✖ 没找到输入框'});
         if (i < list.length - 1) await sleep(intervalMs);
         continue;
       }
 
-      // 选择题：把答案规范化成选项下标
+      // 选择题：答案字母 → 页面上**该字母对应的选项**（超星的选项顺序每题随机打乱！）
       const lis = optionNodes(node);
+      const infos = lis.map((li, k) => optionInfo(li, k));
+      const byLetter = l => infos.findIndex(o => o.letter === l);
       const idxs = [];
       const specs = Array.isArray(spec) ? spec : String(spec).split(/[\s,、|]+/).filter(Boolean);
       for (const raw of specs) {
         const s = String(raw).trim(), u = s.toUpperCase();
-        if (/^[A-Z]$/.test(u)) { const k = u.charCodeAt(0) - 65; if (k < lis.length) { idxs.push(k); continue; } }
-        const k = lis.findIndex(li => txt(li).replace(/^[A-Za-z][.、]?\s*/, '').trim() === s);
+        if (/^[A-Z]$/.test(u)) { const k = byLetter(u); if (k >= 0) { idxs.push(k); continue; } }
+        const k = lis.findIndex((li, k2) => infos[k2].text === s || txt(li).replace(/^[A-Za-z][.、]?\s*/, '').trim() === s);
         if (k >= 0) { idxs.push(k); continue; }
         warn('无法映射的答案：' + s);
       }
@@ -229,7 +299,7 @@
         if (!(await setOption(lis[k], idxs.includes(k))) && idxs.includes(k)) allOk = false;
       }
       allOk ? ok++ : fail++;
-      rows.push({题号: i + 1, 类型: typeName, 答案: idxs.map(k => String.fromCharCode(65 + k)).join(''), 结果: allOk ? '✔ 已勾选' : '✖ 未生效'});
+      rows.push({题号: i + 1, 类型: typeName, 答案: idxs.map(k => infos[k].letter).join(''), 结果: allOk ? '✔ 已勾选' : '✖ 未生效'});
       if (i < list.length - 1) await sleep(intervalMs);      // ★ 错开请求，防平台限流
     }
     console.table(rows);
@@ -237,11 +307,13 @@
     // 复核：实际选中的和期望不一致的再补一次
     const bad = [];
     for (let i = 0; i < list.length; i++) {
-      const spec = answers[i + 1] != null ? answers[i + 1] : answers[list[i].getAttribute('data-id') || ''];
+      const spec = answers[i + 1] != null ? answers[i + 1] : answers[questionId(list[i], i)];
       if (spec == null) continue;
       if (['填空', '简答'].includes(detectType(list[i]))) continue;
       const lis = optionNodes(list[i]);
-      const wanted = /^[A-Z]$/.test(String(spec).toUpperCase()) ? [String(spec).toUpperCase().charCodeAt(0) - 65] : [];
+      const infos = lis.map((li, k) => optionInfo(li, k));
+      const letters = /^[A-Z]$/.test(String(spec).toUpperCase()) ? [String(spec).toUpperCase()] : [];
+      const wanted = letters.map(l => infos.findIndex(o => o.letter === l)).filter(k => k >= 0);
       if (wanted.length && !wanted.every(k => lis[k] && isSelected(lis[k]))) bad.push({i, lis, wanted});
     }
     if (bad.length) {
@@ -312,6 +384,11 @@
       state.answers = j.answers || {};
       log(`答案到齐（${Object.keys(state.answers).length} 题），开始填答…`, '#06c');
       const r = await fill(state.answers, state.opts);
+      // ★ 把填答结果放回桥接层：终端可以等它、并打印"成功几题/失败几题"
+      try {
+        window.__CX_HELPER__.lastFill = r;
+        if (window.__BRIDGE__) { window.__BRIDGE__.fillResult = r; window.__BRIDGE__.fillDone = true; }
+      } catch (e) {}
       log(`填答完成：成功 ${r.ok} / 失败 ${r.fail} / 缺答案 ${r.missing}${r.throttled ? ` / 遇限流等待 ${r.throttled} 次` : ''}${r.remaining ? ` / 仍未生效 ${r.remaining}` : ''}`, (r.fail || r.missing) ? '#e90' : '#0a0');
       const btn = document.querySelector('.btnSubmit, #submitBtn, .submitBtn, a[onclick*="submit"], .sub_btn');
       if (btn) {
