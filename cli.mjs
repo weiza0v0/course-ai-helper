@@ -471,6 +471,23 @@ async function selftest() {
     }
   }
 
+  // 2a. 超星：iframe 穿透 + 字体反爬截图（离线静态检查）
+  {
+    const cx = platforms.find(p => p.id === 'chaoxing');
+    t('超星：声明 iframe 注入（frameAware）', !!cx && cx.frameAware === true);
+    t('超星：提供截图增强（font-cxsecret）', !!cx && typeof cx.enrichPaper === 'function');
+    const helperSrc = fs.readFileSync(path.join(cx.dir, 'console', 'helper.js'), 'utf8');
+    t('超星：qid 从 answertype 隐藏域取', /answertype\(/.test(helperSrc) && /tiankongsize/.test(helperSrc));
+    t('超星：选中态认 num_option.check_answer', /\.num_option/.test(helperSrc) && /check_answer/.test(helperSrc));
+    t('超星：答案字母取显示字母（不是隐藏 data）', /const shown =.{0,80}txt\(num\)/.test(helperSrc) && /letter = shown/.test(helperSrc));
+    t('超星：填空题走 UEditor 编辑器', /answerEditor/.test(helperSrc) && /setContent/.test(helperSrc));
+    t('超星：仍然没有提交动作', !/saveWork\(|submitWork|\.btnSubmit[^)]*\.click/.test(helperSrc));
+    const cdpSrc = fs.readFileSync(path.join(__dirname, 'lib', 'cdp.mjs'), 'utf8');
+    t('CDP：支持跨 iframe 注入与截图', /findFrame\s*\(/.test(cdpSrc) && /setTargetFrame\s*\(/.test(cdpSrc) && /screenshotClip\s*\(/.test(cdpSrc));
+    const agentSrc = fs.readFileSync(path.join(__dirname, 'lib', 'agent.mjs'), 'utf8');
+    t('模型消息：截图 data URL 可以进多模态消息', /data:image/.test(agentSrc) && /q\.shot/.test(agentSrc));
+  }
+
   // 2b. 浏览器/profile 定位
   const portable = path.join(path.sep + 'tmp', 'ChromePortable', 'chrome.exe');
   const pc = profileCandidates(portable).map(([, d]) => d);
@@ -881,6 +898,8 @@ function makeLogStream(session) {
       if (n++ < seen) continue;
       const text = cleanConsoleArgs(log.args && log.args.length ? log.args.map(v => ({value: v})) : [{value: log.text}]).replace(/^%c\s*/, '');
       if (!text) continue;
+      // console.table() 会以 "Array(10)" 这种形式出现在 console 事件里，别当填答日志打出来
+      if (/^(Array\(\d*\)|Object|\[object Object\])$/.test(text.trim())) continue;
       if (/^(MOOC|超星|智慧树)?\s*(AI 答题助手|助手)/.test(text) && /版本|已启动/.test(text)) continue;
       const col = log.type === 'error' || log.type === 'warning' ? 'yellow' : 'dim';
       info(c('    [脚本] ' + text.slice(0, 160), col));
@@ -917,6 +936,13 @@ async function acquireAnswerPage({platform, port, CFG}) {
         fillIntervalMs: CFG.app.fill_interval_ms,
         limitBackoffMs: CFG.app.limit_backoff_ms,
       })).catch(() => {});
+      // ★ 重新运行时：先停掉上一次注入留下的轮询器，并重置桥接状态。
+      //   否则旧 helper 还在跑，两个轮询器会各填一遍答案（选项可能被点两次而取消）。
+      await session.eval(`(() => {
+        try { if (window.__CX_HELPER__ && window.__CX_HELPER__.stop) window.__CX_HELPER__.stop(); } catch (e) {}
+        try { if (window.__BRIDGE__) { window.__BRIDGE__.status = 'pending'; window.__BRIDGE__.answers = null; window.__BRIDGE__.paper = null; window.__BRIDGE__.delivered = false; } } catch (e) {}
+        return 'reset';
+      })()`).catch(() => {});
       const helperPath = path.join(platform.dir, platform.pageScript || 'console/helper.js');
       await session.eval(preparePageScript(fs.readFileSync(helperPath, 'utf8'))).catch(e => {
         info(c('    (脚本返回：' + String(e.message).slice(0, 60) + ')', 'dim'));
@@ -946,18 +972,42 @@ async function acquireAnswerPage({platform, port, CFG}) {
     for (;;) {   // ★ 不设时间上限：一直等到你按回车
       // 1) 找答题页标签（**按标签 id 判断**，别被 SPA 改 hash 骗得反复重挂）
       const tabs = await listTabs(port).catch(() => []);
-      const hit = tabs.find(t => platform.matchUrl.test(t.url));
-      if (hit && (!tab || hit.id !== tab.id)) {
+      const tabRe = platform.frameAware ? (platform.siteUrl || platform.matchUrl) : platform.matchUrl;
+      const cands = tabs.filter(t => tabRe.test(t.url));
+      const alive = tab && cands.some(t => t.id === tab.id);
+      if (!alive && cands.length) {
         if (session) { try { session.close(); } catch {} }
-        tab = hit;
-        session = await CdpSession.attach(tab);
-        probeN = 0; announced = false;
-        ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
+        session = null; tab = null;
+        // ★ frameAware 平台（超星）：题目在 iframe 里，要逐个标签试，选第一个真能找到题目 frame 的
+        for (const cand of cands) {
+          let s = null;
+          try { s = await CdpSession.attach(cand); } catch { continue; }
+          if (platform.frameAware) {
+            const f = await s.findFrame(platform.frameProbe || platform.readyProbe || READY_PROBE, {timeoutMs: 1500}).catch(() => null);
+            if (!f) { s.close(); continue; }
+            s.setTargetFrame(f.frameId);
+            probeN = f.count;
+          }
+          session = s; tab = cand; announced = false;
+          ok('识别到答题页：' + ((tab.title || '').replace(/\s+/g, ' ').slice(0, 40) || tab.url.slice(0, 60)));
+          break;
+        }
       }
 
       // 2) 只读探测：页面上有没有题目节点（不注入任何东西）
       if (session && !announced) {
-        probeN = await session.eval(platform.readyProbe || READY_PROBE).catch(() => 0);
+        let n = 0;
+        if (platform.frameAware) {
+          if (session.targetFrameId) n = await session.eval(platform.readyProbe || READY_PROBE).catch(() => 0);
+          if (!n) {
+            const f = await session.findFrame(platform.frameProbe || platform.readyProbe || READY_PROBE, {timeoutMs: 1200}).catch(() => null);
+            if (f) { session.setTargetFrame(f.frameId); n = f.count; }
+            else { session.setTargetFrame(null); n = 0; }
+          }
+        } else {
+          n = await session.eval(platform.readyProbe || READY_PROBE).catch(() => 0);
+        }
+        probeN = n;
         if (probeN > 0) {
           announced = true;
           console.log();
@@ -1226,8 +1276,19 @@ async function main() {
     process.exit(3);
   }
   const session = acq.session;
-  const paper = acq.paper;
+  let paper = acq.paper;
   ok(`读到 ${paper.questions.length} 道题${paper.name || paper.title ? '：' + String(paper.name || paper.title).slice(0, 40) : ''}`);
+
+  // ★ 平台增强（超星）：题目在 iframe 里已由 frame 注入解决；字体反爬则在这里截图。
+  if (typeof platform.enrichPaper === 'function') {
+    step('处理页面特殊结构（iframe / 字体反爬）…');
+    try {
+      paper = (await platform.enrichPaper(session, paper)) || paper;
+      if (paper.obfuscated) info(c(`    检测到字体反爬：已给 ${paper.shots || 0}/${paper.questions.length} 道题截图，交给多模态模型读题`, 'dim'));
+    } catch (e) {
+      warn('页面增强失败（继续用文本解题）：' + e.message);
+    }
+  }
 
   let fillResult = null;
   if (platform.mode === 'script' && !sheetOnly) {
@@ -1237,15 +1298,22 @@ async function main() {
     step('把答案交回页面脚本，让它自己填…');
     const drainFillLog = makeLogStream(session);
     await session.eval(`window.__BRIDGE__.answers = ${JSON.stringify(answers)}; window.__BRIDGE__.status = 'done';`);
-    for (let i = 0; i < 90; i++) {
+    // ★ 等页面脚本真的填完（它会写 __BRIDGE__.fillDone）—— 填空题走 UEditor、多题要限速，
+    //   不能只看到 'delivering' 就当填完了。
+    let delivered = false;
+    for (let i = 0; i < 160; i++) {          // 最多 80s
       await sleep(500);
       drainFillLog();
       const st = await session.eval('window.__BRIDGE__.status').catch(() => null);
-      if (st === 'delivering') { await sleep(1200); drainFillLog(); break; }
+      if (st === 'delivering') delivered = true;
+      const filled = await session.eval('!!(window.__BRIDGE__ && window.__BRIDGE__.fillDone)').catch(() => false);
+      if (filled) break;
+      if (delivered && i > 100) break;       // 已开始填但 50s 还没填完：不再无限等
     }
-    await sleep(1500);
+    await sleep(500);
     drainFillLog();
-    fillResult = {done: true};
+    const fr = await session.eval('window.__BRIDGE__ && window.__BRIDGE__.fillResult ? JSON.stringify(window.__BRIDGE__.fillResult) : null').catch(() => null);
+    fillResult = fr ? JSON.parse(fr) : {done: delivered};
   } else {
     // ---- CDP 只读：卷子已由 acquireAnswerPage 只读读出
     step('只读模式（不执行页面脚本、不在页面上点击）');
@@ -1258,6 +1326,13 @@ async function main() {
   if (sheetOnly) {
     warn('本模式只出答案单，没有在页面上做任何修改。交卷请你自己来。');
   } else {
+    if (fillResult && Number.isFinite(fillResult.ok)) {
+      const miss = Number(fillResult.fail || 0) + Number(fillResult.missing || 0);
+      ok(`页面填答：成功 ${fillResult.ok} 题` +
+        (fillResult.fail ? ` · 失败 ${fillResult.fail}` : '') +
+        (fillResult.missing ? ` · 缺答案 ${fillResult.missing}` : '') +
+        (fillResult.remaining ? ` · 仍未生效 ${fillResult.remaining}` : ''));
+    }
     warn('答案已填入页面。请自己核对后再提交 —— 本工具不会替你提交。');
   }
   console.log();

@@ -18,7 +18,7 @@ if not defined NODEEXE (
 if not defined NODEEXE (
   echo.
   echo   [ERROR] Node.js not found.
-  echo   Easiest fix - double-click this file (it needs NO Node):
+  echo   Easiest fix - double-click this file ^(it needs NO Node^):
   echo       download-node.bat
   echo   It downloads a portable node.exe into the "runtime" folder.
   echo   Or install Node 18+ yourself from https://nodejs.org/
